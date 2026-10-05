@@ -1,0 +1,26 @@
+# ===== 运行时依赖（体积大，由用户自己下载）=====
+# Electron 运行时约 348MB，超过 GitHub 单文件 100MB 硬限制，不入库。
+# 首次使用请运行：node _dsh_probe/copy_electron.py  或  npm i electron
+bin/
+
+node_modules/
+
+# ===== 个人配置与使用数据（不入库）=====
+# user-config.json 保存本机端口、宠物大小、API Key 等个人设置
+config/user-config.json
+
+# 运行日志与状态（含本机使用痕迹）
+data/
+
+# ===== 开发调试产物（不入库）=====
+_debug/
+_old/
+
+# ===== 通用忽略 =====
+*.log
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
+.venv/
+venv/

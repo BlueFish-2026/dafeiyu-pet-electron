@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大肥鱼 · 设置</title>
+<style>
+  :root {
+    --sky: #0ea5e9;
+    --sky-soft: #e0f2fe;
+    --teal: #14b8a6;
+    --teal-soft: #ccfbf1;
+    --cta: #ff7a18;
+    --ink: #0f172a;
+    --ink-2: #475569;
+    --ink-3: #94a3b8;
+    --line: #e2e8f0;
+    --card: #ffffff;
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 20px 80px;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1100px 500px at 8% -8%, #e0f2fe 0%, transparent 60%),
+      radial-gradient(900px 460px at 96% 4%, #ccfbf1 0%, transparent 58%),
+      #f8fafc;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+
+  header { margin-bottom: 26px; }
+  h1 { margin: 0 0 8px; font-size: 25px; font-weight: 650; letter-spacing: -0.02em; }
+  .sub { color: var(--ink-2); font-size: 14px; line-height: 1.7; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px; border-radius: 999px; font-size: 12.5px;
+    background: var(--teal-soft); color: #0f766e; font-weight: 550;
+    margin-right: 8px; margin-top: 8px;
+  }
+  .pill.warn { background: #fef3c7; color: #b45309; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 22px 24px;
+    margin-bottom: 18px;
+    box-shadow: 0 1px 2px rgba(15,23,42,.04), 0 12px 32px -18px rgba(15,23,42,.18);
+  }
+  .card h2 {
+    margin: 0 0 4px; font-size: 16px; font-weight: 620;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .card h2 .ico {
+    width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+    background: var(--sky-soft); color: var(--sky); font-size: 14px;
+  }
+  .card .hint { color: var(--ink-3); font-size: 12.5px; margin: 0 0 16px; line-height: 1.6; }
+
+  .row { display: flex; flex-wrap: wrap; gap: 16px; }
+  .field { flex: 1 1 150px; min-width: 130px; }
+  label { display: block; font-size: 12.5px; color: var(--ink-2); margin-bottom: 6px; font-weight: 500; }
+  input[type=text], input[type=time], input[type=number], select {
+    width: 100%; padding: 9px 12px; font-size: 14px; font-family: inherit;
+    border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus, select:focus {
+    outline: none; border-color: var(--sky);
+    box-shadow: 0 0 0 3px rgba(14,165,233,.13);
+  }
+
+  .switch { display: flex; align-items: center; justify-content: space-between; padding: 11px 0; }
+  .switch + .switch { border-top: 1px solid #f1f5f9; }
+  .switch span { font-size: 14px; }
+  .switch small { display: block; color: var(--ink-3); font-size: 12px; margin-top: 3px; }
+  .tg {
+    position: relative; width: 44px; height: 25px; border-radius: 999px;
+    background: #cbd5e1; cursor: pointer; flex: 0 0 auto; transition: background .18s;
+  }
+  .tg::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 19px; height: 19px;
+    border-radius: 50%; background: #fff; transition: transform .18s;
+    box-shadow: 0 1px 3px rgba(0,0,0,.2);
+  }
+  .tg.on { background: var(--teal); }
+  .tg.on::after { transform: translateX(19px); }
+
+  .reminder {
+    display: flex; gap: 10px; align-items: center; padding: 12px;
+    border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px;
+    background: #fcfdfe;
+  }
+  .reminder input[type=time] { width: 108px; flex: 0 0 auto; }
+  .reminder input[type=text] { flex: 1 1 auto; }
+  .reminder select { width: 92px; flex: 0 0 auto; }
+  .reminder.off { opacity: .5; }
+  .icon-btn {
+    flex: 0 0 auto; width: 34px; height: 34px; border-radius: 9px;
+    border: 1px solid var(--line); background: #fff; cursor: pointer;
+    display: grid; place-items: center; font-size: 15px; color: var(--ink-2);
+    transition: all .15s;
+  }
+  .icon-btn:hover { border-color: #fca5a5; color: #dc2626; background: #fef2f2; }
+
+  .empty { color: var(--ink-3); font-size: 13px; padding: 18px 0; text-align: center; }
+
+  button.primary, button.ghost {
+    font-family: inherit; font-size: 14px; font-weight: 560; cursor: pointer;
+    border-radius: 11px; padding: 11px 20px; transition: all .15s;
+  }
+  button.primary {
+    background: var(--cta); color: #fff; border: none;
+    box-shadow: 0 6px 18px -8px rgba(255,122,24,.7);
+  }
+  button.primary:hover { background: #ea6a0c; }
+  button.ghost { background: #fff; color: var(--ink-2); border: 1px solid var(--line); }
+  button.ghost:hover { border-color: var(--sky); color: var(--sky); }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+  .balance-big { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; }
+  .balance-big small { font-size: 15px; font-weight: 500; color: var(--ink-3); margin-left: 5px; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 34px; transform: translate(-50%, 20px);
+    background: #0f172a; color: #fff; padding: 12px 22px; border-radius: 11px;
+    font-size: 13.5px; opacity: 0; pointer-events: none; transition: all .25s;
+    box-shadow: 0 12px 30px -10px rgba(15,23,42,.5);
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>大肥鱼 · 设置</h1>
+    <div class="sub">宠物正在桌面上跑着。这里的改动点「保存」后立即生效，不用重启。</div>
+    <div id="status"></div>
+  </header>
+
+  <div class="card">
+    <h2><span class="ico">¥</span>余额</h2>
+    <p class="hint">从 DeepSeek 官方接口读取，宠物头顶会按余额多少播不同动画。</p>
+    <div class="balance-big" id="balance">—</div>
+    <div class="actions" style="margin-top:16px">
+      <label class="switch" style="gap:10px;padding:0">
+        <span style="font-size:13.5px;color:var(--ink-2)">显示余额</span>
+      </label>
+      <div class="tg" id="tg-balance"></div>
+      <button class="ghost" id="btn-refresh">立即刷新</button>
+    </div>
+    <div class="field" style="margin-top:16px">
+      <label>DeepSeek API Key（留空 = 自动沿用 DSH 里那份；填上就不依赖 DSH 了）</label>
+      <input type="text" id="api-key" placeholder="sk-..." spellcheck="false" autocomplete="off">
+      <div style="font-size:12px;color:var(--ink-3);margin-top:6px">只保存在本机 config\user-config.json，不会外传。</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="ico">⏱</span>久坐提醒</h2>
+    <p class="hint">连续用电脑满设定时长就提醒一次。中途离开（无键鼠操作）超过设定时长会算作休息，重新计时。</p>
+    <div class="switch">
+      <span>开启久坐提醒</span>
+      <div class="tg" id="tg-sed"></div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <div class="field">
+        <label>坐多久提醒一次（分钟）</label>
+        <input type="number" id="sed-interval" min="1" max="600">
+      </div>
+      <div class="field">
+        <label>离开多久算休息过（分钟）</label>
+        <input type="number" id="sed-away" min="1" max="120">
+      </div>
+      <div class="field">
+        <label>不理会时多久再催（分钟）</label>
+        <input type="number" id="sed-snooze" min="0" max="120">
+      </div>
+    </div>
+    <div class="field" style="margin-top:16px">
+      <label>提醒文案（每行一句，随机抽；<code>{min}</code> 会替换成已坐分钟数）</label>
+      <textarea id="sed-texts" rows="4" style="width:100%;padding:9px 12px;font-size:14px;font-family:inherit;border:1px solid var(--line);border-radius:10px;resize:vertical"></textarea>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2><span class="ico">🔔</span>定时提醒</h2>
+    <p class="hint">到点宠物会播动画、弹气泡，并推一条系统通知。</p>
+    <div class="switch">
+      <span>开启定时提醒<small>关掉 = 下面所有条目一起暂停，条目本身保留</small></span>
+      <div class="tg" id="tg-sch"></div>
+    </div>
+    <div id="list" style="margin-top:12px"></div>
+    <button class="ghost" id="btn-add" style="margin-top:6px">+ 添加一条</button>
+  </div>
+
+  <div class="card">
+    <h2><span class="ico">🐟</span>外观与通知</h2>
+    <div class="row" style="margin-top:4px">
+      <div class="field">
+        <label>宠物大小</label>
+        <input type="number" id="pet-size" min="80" max="900" step="10">
+      </div>
+      <div class="field">
+        <label>起始角落</label>
+        <select id="pet-corner">
+          <option value="top-right">右上</option>
+          <option value="top-left">左上</option>
+          <option value="bottom-right">右下</option>
+          <option value="bottom-left">左下</option>
+        </select>
+      </div>
+    </div>
+    <div class="switch" style="margin-top:12px">
+      <span>配合系统通知<small>提醒时额外弹一条右下角系统通知</small></span>
+      <div class="tg" id="tg-notify"></div>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label>提醒气泡停留时长（秒）</label>
+      <input type="number" id="bubble-sec" min="5" max="120">
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="btn-save">保存</button>
+    <button class="ghost" id="btn-test-sed">试一下久坐提醒</button>
+    <button class="ghost" id="btn-test-sch">试一下定时提醒</button>
+  </div>
+
+</div>
+<div id="toast"></div>
+
+<script>
+let cfg = null;
+let state = null;
+
+const $ = (id) => document.getElementById(id);
+
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+function bindToggle(el, get, set) {
+  const render = () => el.classList.toggle('on', !!get());
+  el.onclick = () => { set(!get()); render(); };
+  render();
+}
+
+let balanceOn = true, sedOn = true, notifyOn = true, schOn = true;
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+  return res.json();
+}
+
+async function load() {
+  state = await api('/api/state');
+  cfg = state.config;
+
+  // 状态条
+  const keyOk = state.hasKey;
+  $('status').innerHTML =
+    `<span class="pill"><span class="dot"></span>运行中 · 端口 ${state.port}</span>` +
+    (keyOk
+      ? `<span class="pill"><span class="dot"></span>余额密钥：${state.keySource}</span>`
+      : `<span class="pill warn"><span class="dot"></span>未找到 DeepSeek 密钥，余额功能不可用</span>`);
+
+  balanceOn = !!cfg.balance.enabled;
+  sedOn = !!cfg.sedentary.enabled;
+  notifyOn = !!cfg.systemNotification;
+  schOn = cfg.scheduleEnabled !== false;
+
+  bindToggle($('tg-balance'), () => balanceOn, (v) => { balanceOn = v; });
+  bindToggle($('tg-sed'), () => sedOn, (v) => { sedOn = v; });
+  bindToggle($('tg-notify'), () => notifyOn, (v) => { notifyOn = v; });
+  bindToggle($('tg-sch'), () => schOn, (v) => { schOn = v; });
+
+  $('sed-interval').value = cfg.sedentary.intervalMin;
+  $('sed-away').value = cfg.sedentary.awayResetMin;
+  $('sed-snooze').value = cfg.sedentary.snoozeMin;
+  $('sed-texts').value = (cfg.sedentary.texts || []).join('\n');
+
+  $('pet-size').value = cfg.pet.size;
+  $('pet-corner').value = cfg.pet.corner;
+  $('bubble-sec').value = cfg.bubbleSeconds;
+  $('api-key').value = cfg.deepseekApiKey || '';
+
+  renderReminders();
+  refreshBalance();
+}
+
+function renderReminders() {
+  const list = $('list');
+  const items = cfg.reminders || [];
+  if (items.length === 0) {
+    list.innerHTML = '<div class="empty">还没有定时提醒，点下面加一条</div>';
+    return;
+  }
+  list.innerHTML = '';
+  items.forEach((r, i) => {
+    const row = document.createElement('div');
+    row.className = 'reminder' + (r.enabled === false ? ' off' : '');
+    row.innerHTML =
+      '<input type="time" value="' + (r.time || '09:00') + '">' +
+      '<input type="text" placeholder="提醒内容，例如：开会" value="' + escapeAttr(r.text || '') + '">' +
+      '<select>' +
+        '<option value="daily">每天</option>' +
+        '<option value="once">仅一次</option>' +
+      '</select>' +
+      '<button class="icon-btn" title="删除">✕</button>';
+    row.querySelector('input[type=time]').oninput = (e) => { r.time = e.target.value; };
+    row.querySelector('input[type=text]').oninput = (e) => { r.text = e.target.value; };
+    const sel = row.querySelector('select');
+    sel.value = r.repeat === 'once' ? 'once' : 'daily';
+    sel.onchange = (e) => { r.repeat = e.target.value; };
+    row.querySelector('button').onclick = () => {
+      cfg.reminders.splice(i, 1);
+      renderReminders();
+    };
+    list.appendChild(row);
+  });
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+function collect() {
+  cfg.balance.enabled = balanceOn;
+  cfg.sedentary.enabled = sedOn;
+  cfg.systemNotification = notifyOn;
+  cfg.scheduleEnabled = schOn;
+  cfg.sedentary.intervalMin = Number($('sed-interval').value) || 45;
+  cfg.sedentary.awayResetMin = Number($('sed-away').value) || 5;
+  cfg.sedentary.snoozeMin = Number($('sed-snooze').value) || 0;
+  cfg.sedentary.texts = $('sed-texts').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  cfg.pet.size = Number($('pet-size').value) || 462;
+  cfg.pet.corner = $('pet-corner').value;
+  cfg.bubbleSeconds = Number($('bubble-sec').value) || 20;
+  cfg.deepseekApiKey = $('api-key').value.trim();
+  // 给没有 id 的新提醒补一个
+  cfg.reminders.forEach((r, i) => {
+    if (!r.id) r.id = 'r' + Date.now() + '_' + i;
+    if (!r.repeat) r.repeat = 'daily';
+    if (r.enabled === undefined) r.enabled = true;
+  });
+  return cfg;
+}
+
+async function refreshBalance() {
+  try {
+    const b = await api('/dsh-pet-7340/balance');
+    if (b.ok) {
+      $('balance').innerHTML = b.data.total + '<small>' + b.data.currency + '</small>';
+    } else {
+      $('balance').innerHTML = '<span style="font-size:15px;color:var(--ink-3)">' +
+        (b.reason === 'credential-missing' ? '未配置密钥' : '暂时读不到：' + (b.message || b.reason)) + '</span>';
+    }
+  } catch (e) {
+    $('balance').textContent = '读取失败';
+  }
+}
+
+$('btn-add').onclick = () => {
+  cfg.reminders = cfg.reminders || [];
+  cfg.reminders.push({ id: 'r' + Date.now(), time: '09:00', text: '', repeat: 'daily', enabled: true });
+  renderReminders();
+};
+
+$('btn-save').onclick = async () => {
+  try {
+    const payload = collect();
+    const res = await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    cfg = res.config;
+    toast('已保存，宠物已按新设置重启');
+  } catch (e) {
+    toast('保存失败：' + e.message);
+  }
+};
+
+$('btn-refresh').onclick = async () => {
+  try {
+    await api('/api/balance-refresh', { method: 'POST' });
+    await refreshBalance();
+    toast('已刷新，宠物头顶会重播余额动画');
+  } catch (e) {
+    toast('刷新失败：' + e.message);
+  }
+};
+
+$('btn-test-sed').onclick = () => fireTest('sedentary', '测试：该起来动动啦');
+$('btn-test-sch').onclick = () => fireTest('schedule', '测试：提醒时间到了');
+
+async function fireTest(kind, text) {
+  try {
+    await api('/api/test?kind=' + kind + '&text=' + encodeURIComponent(text), { method: 'POST' });
+    toast('已触发，看桌面上的宠物');
+  } catch (e) {
+    toast('触发失败：' + e.message);
+  }
+}
+
+load().catch((e) => {
+  document.body.insertAdjacentHTML('afterbegin',
+    '<div style="padding:16px;background:#fef2f2;color:#b91c1c;border-radius:12px;margin-bottom:16px">' +
+    '加载失败：' + e.message + '</div>');
+});
+</script>
+</body>
+</html>
