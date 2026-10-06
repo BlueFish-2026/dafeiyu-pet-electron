@@ -8,6 +8,8 @@ node_modules/
 # ===== 个人配置与使用数据（不入库）=====
 # user-config.json 保存本机端口、宠物大小、API Key 等个人设置
 config/user-config.json
+config/user-config.json.bak-*
+*.bak-*
 
 # 运行日志与状态（含本机使用痕迹）
 data/

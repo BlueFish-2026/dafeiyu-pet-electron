@@ -4,7 +4,9 @@
  * 两类提醒：
  *   久坐提醒（sedentary）：连续使用满 N 分钟触发一次，之后每 snoozeMin 分钟再催一次；
  *                          中途离开电脑（无键鼠输入）超过 awayResetMin 分钟即视为休息，重新计时。
- *   定时提醒（schedule）：用户设定的固定时刻（HH:MM），支持每天重复 / 仅一次。
+ *   定时提醒（schedule）：用户设定的固定时刻（HH:MM），支持四种重复规则 ——
+ *                          daily（每天）/ workday（工作日，跳过法定节假日、补班日算工作日）/
+ *                          weekly（自定义星期）/ once（仅一次）。
  *
  * 引擎只负责「什么时候该响」，不负责「怎么响」——由调用方注入 onFire(kind, text)，
  * 宿主拿到后去推 /work-status（切动画 + 弹气泡）并发系统通知。这样引擎可独立测试。
@@ -34,6 +36,44 @@ function localDateKey(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+/**
+ * 判断某条提醒「今天该不该响」。
+ *
+ * repeat 取值：
+ *   'once'    仅一次（触发过永久作废，不参与本判定）
+ *   'daily'   每天
+ *   'workday' 工作日（跳过法定节假日；调休补班日即使周末也算工作日）
+ *   'weekly'  自定义星期（按 r.weekdays 数组，0=周日 … 6=周六）
+ *
+ * 向后兼容：旧配置没有 repeat 或值不认识 → 按每天处理。
+ *
+ * @param {object} r          提醒条目
+ * @param {Date}   d          当前时刻
+ * @param {object} holiday    HolidayCalendar 实例（可为 null）
+ * @returns {{ok: boolean, reason?: string}}
+ */
+function shouldFireToday(r, d, holiday) {
+  const repeat = r.repeat;
+
+  if (repeat === 'workday') {
+    const isWork = holiday ? holiday.isWorkday(d) : null;
+    if (isWork === true) return { ok: true };
+    if (isWork === false) return { ok: false, reason: '今天休息' };
+    // 数据不可用 → 降级为纯星期判定（周一~周五），保证提醒不因断网失灵
+    const w = d.getDay();
+    return w >= 1 && w <= 5 ? { ok: true, reason: '降级' } : { ok: false, reason: '周末' };
+  }
+
+  if (repeat === 'weekly') {
+    const days = Array.isArray(r.weekdays) ? r.weekdays.map(Number).filter((n) => n >= 0 && n <= 6) : [];
+    if (days.length === 0) return { ok: true }; // 没勾任何一天 = 不当限制，视作每天
+    return days.includes(d.getDay()) ? { ok: true } : { ok: false, reason: '非指定星期' };
+  }
+
+  // 'daily' 及未知值：每天
+  return { ok: true };
+}
+
 export class ReminderEngine {
   /**
    * @param {object} opts
@@ -41,12 +81,14 @@ export class ReminderEngine {
    * @param {() => number} opts.getIdleSeconds 系统空闲秒数（无人操作时长）
    * @param {(kind: string, text: string) => void} opts.onFire 触发回调
    * @param {(msg: string) => void} [opts.log]
+   * @param {object} [opts.holiday] 节假日日历（HolidayCalendar 实例，可选——缺省则 workday 规则降级为纯星期）
    */
   constructor(opts) {
     this.getConfig = opts.getConfig;
     this.getIdleSeconds = opts.getIdleSeconds;
     this.onFire = opts.onFire;
     this.log = opts.log ?? (() => {});
+    this.holiday = opts.holiday ?? null;
 
     /** 本次连续「在座」的起点（ms）；null = 当前判定为已离开 */
     this.seatStart = null;
@@ -186,13 +228,24 @@ export class ReminderEngine {
 
   // ---------- 定时 ----------
 
+  /** 生产入口：按当前真实时间判定。测试用 tickSchedulesAt 传入假时钟。 */
   tickSchedules(cfg, now) {
-    // 总开关（右键菜单「定时提醒」）：关掉时所有条目一起暂停，条目本身保留不删
-    if (cfg.scheduleEnabled === false) return;
-    const list = Array.isArray(cfg.reminders) ? cfg.reminders : [];
-    if (list.length === 0) return;
+    return this.tickSchedulesAt(cfg, new Date(now));
+  }
 
-    const d = new Date(now);
+  /**
+   * 带可注入时钟的判定核心（测试用）。
+   * @param {object} cfg
+   * @param {Date}   d 视为「当前时刻」
+   * @returns {boolean} 本次是否有条目被触发
+   */
+  tickSchedulesAt(cfg, d) {
+    // 总开关（右键菜单「定时提醒」）：关掉时所有条目一起暂停，条目本身保留不删
+    if (!cfg || cfg.scheduleEnabled === false) return false;
+    const list = Array.isArray(cfg.reminders) ? cfg.reminders : [];
+    if (list.length === 0) return false;
+
+    let firedAny = false;
     const todayKey = localDateKey(d);
     const nowMin = d.getHours() * 60 + d.getMinutes();
     const nowSec = d.getSeconds();
@@ -212,14 +265,19 @@ export class ReminderEngine {
         if (this.firedOn.get(r.id) === ONCE_USED) continue;
         this.firedOn.set(r.id, ONCE_USED);
       } else {
-        // 每天重复：同一天只触发一次（跨天自动解禁，靠日期串比对）
+        // 重复类：先过「今天该不该响」的规则（工作日 / 自定义星期），不过就跳过
+        const verdict = shouldFireToday(r, d, this.holiday);
+        if (!verdict.ok) continue;
+        // 同一天只触发一次（跨天自动解禁，靠日期串比对）
         if (this.firedOn.get(r.id) === todayKey) continue;
         this.firedOn.set(r.id, todayKey);
       }
 
       const text = String(r.text || '提醒时间到了').trim();
       this.fireNow('schedule', text);
+      firedAny = true;
     }
+    return firedAny;
   }
 }
 

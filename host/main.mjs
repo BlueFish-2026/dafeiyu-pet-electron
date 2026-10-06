@@ -36,6 +36,7 @@ import { fileURLToPath } from 'node:url';
 import { ROOT, DATA_DIR, ensureDirs, loadUserConfig, saveUserConfig, buildPetConfig, loadDefaultPetConfig } from './config.mjs';
 import { queryBalance, resolveApiKey } from './balance.mjs';
 import { ReminderEngine } from './reminders.mjs';
+import { HolidayCalendar } from './holiday.mjs';
 
 const PREFIX = '/dsh-pet-7340';
 const HOST_NAME = 'dsh-pet-standalone';
@@ -180,9 +181,13 @@ function sendText(res, status, text) {
   res.end(body);
 }
 
-function sendFile(res, file) {
+// cache：默认长缓存（assets 里的大视频/图片换来就是几十 MB，缓存收益明显）。
+// 但 HTML/JSON 这类「会在升级后变样」的文件必须 no-cache，
+// 否则改完设置页用户浏览器还拿 24 小时前的旧版（曾经踩过：新选项根本不出现）。
+function sendFile(res, file, opts = {}) {
   const ext = extname(file).toLowerCase();
   const type = MIME[ext] ?? 'application/octet-stream';
+  const cache = opts.cache ?? (ext === '.html' || ext === '.htm' ? 'no-cache' : 'public, max-age=86400');
   let size = 0;
   try {
     size = statSync(file).size;
@@ -192,7 +197,7 @@ function sendFile(res, file) {
   res.writeHead(200, {
     'content-type': type,
     'content-length': size,
-    'cache-control': 'public, max-age=86400',
+    'cache-control': cache,
     'accept-ranges': 'bytes',
   });
   const stream = createReadStream(file);
@@ -409,6 +414,13 @@ async function handleRoute(req, res) {
 async function handleApi(path, req, res, url) {
   const action = path.slice('/api/'.length);
 
+  // 管理页的「界面版本」——取自 admin.html 的修改时间。
+  // 页面每几秒来问一次：数字变了说明程序升级过、界面对不上了，页面就自动刷新。
+  // 这是为了根治「我改了设置页，用户浏览器还显示旧界面」这类问题（详见记忆）。
+  if (action === 'ui-version' && req.method === 'GET') {
+    return sendJson(res, 200, { ok: true, version: uiVersion() });
+  }
+
   // 当前状态（管理页加载时拉一次）
   if (action === 'state' && req.method === 'GET') {
     return sendJson(res, 200, {
@@ -567,13 +579,23 @@ function pushPetConfigChanged() {
 // ---------------------------------------------------------------- 提醒引擎
 
 let reminder = null;
+/** 中国法定节假日日历（定时提醒的「工作日」规则用）；拉取失败自动降级为纯星期判定 */
+const holiday = new HolidayCalendar({ dataDir: DATA_DIR, log: (m) => log('[节假日] ' + m) });
 
 function initReminders() {
+  // 预热节假日数据（后台进行，不阻塞启动；失败也不影响提醒）
+  try {
+    holiday.warmup();
+  } catch (e) {
+    log('[节假日] 预热失败（忽略）：' + (e && e.message));
+  }
+
   reminder = new ReminderEngine({
     getConfig: () => userCfg,
     getIdleSeconds: () => powerMonitor.getSystemIdleTime(),
     onFire: (kind, text) => fireReminder(kind, text),
     log: (m) => log('[提醒] ' + m),
+    holiday,
   });
 
   // 载入上次的触发记录（避免重启后重复提醒）
@@ -826,9 +848,26 @@ async function startServer() {
 
 let tray = null;
 
+// 管理页「界面版本」= admin.html 的修改时间（毫秒）。
+// 一物两用：① 拼进 URL 的 ?v= 让浏览器绕开旧缓存；② 页面轮询它来判断该不该自动刷新。
+function uiVersion() {
+  try {
+    return String(Math.floor(statSync(join(WEB_DIR, 'admin.html')).mtimeMs));
+  } catch {
+    return '0';
+  }
+}
+
+// 管理页 URL 统一带「版本串」?v=<admin.html 的修改时间>。
+// 为什么必须带：浏览器对同一个 URL 会复用缓存，曾出现过「设置页改了、用户刷新还是旧的」
+// （缓存头已改 no-cache 兜底，URL 变一下更稳，且能立刻绕开任何已存在的旧缓存条目）。
+function adminUrl() {
+  return `http://127.0.0.1:${httpPort}/admin?v=${uiVersion()}`;
+}
+
 function openAdmin() {
   try {
-    shell.openExternal(`http://127.0.0.1:${httpPort}/admin`);
+    shell.openExternal(adminUrl());
   } catch {
     /* 打不开浏览器不影响宠物本体 */
   }

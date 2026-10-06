@@ -98,8 +98,27 @@
   }
   .reminder input[type=time] { width: 108px; flex: 0 0 auto; }
   .reminder input[type=text] { flex: 1 1 auto; }
-  .reminder select { width: 92px; flex: 0 0 auto; }
+  .reminder select { width: 124px; flex: 0 0 auto; }
   .reminder.off { opacity: .5; }
+  /* 自定义星期的勾选行：单独占一行，避免把时间/内容挤变形 */
+  .reminder-wrap { margin-bottom: 10px; }
+  .reminder-wrap .reminder { margin-bottom: 0; }
+  .weekdays {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    padding: 8px 12px 10px 12px; margin-top: -1px;
+    border: 1px solid var(--line); border-top: none;
+    border-radius: 0 0 12px 12px; background: #f6fafb;
+  }
+  .weekdays .wl { font-size: 12px; color: var(--ink-3); margin-right: 2px; }
+  .wd {
+    width: 30px; height: 30px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: #fff; color: var(--ink-2);
+    font-size: 12px; display: grid; place-items: center; user-select: none;
+    transition: all .15s;
+  }
+  .wd:hover { border-color: var(--teal); }
+  .wd.on { background: var(--teal); border-color: var(--teal); color: #fff; font-weight: 500; }
+  .hint-mini { font-size: 12px; color: var(--ink-3); margin-left: auto; }
   .icon-btn {
     flex: 0 0 auto; width: 34px; height: 34px; border-radius: 9px;
     border: 1px solid var(--line); background: #fff; cursor: pointer;
@@ -133,6 +152,7 @@
     box-shadow: 0 12px 30px -10px rgba(15,23,42,.5);
   }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
 </style>
 </head>
 <body>
@@ -196,6 +216,9 @@
       <span>开启定时提醒<small>关掉 = 下面所有条目一起暂停，条目本身保留</small></span>
       <div class="tg" id="tg-sch"></div>
     </div>
+    <p class="hint" style="margin-top:10px">
+      重复规则：「<b>工作日</b>」自动跳过法定节假日，调休补班的周末照样提醒；「<b>自定义星期</b>」可以只挑某几天。
+    </p>
     <div id="list" style="margin-top:12px"></div>
     <button class="ghost" id="btn-add" style="margin-top:6px">+ 添加一条</button>
   </div>
@@ -300,6 +323,9 @@ async function load() {
   refreshBalance();
 }
 
+// 星期标签（0=周日 … 6=周六，与 JS getDay() 一致）；显示用「日一二三四五六」
+const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
+
 function renderReminders() {
   const list = $('list');
   const items = cfg.reminders || [];
@@ -309,6 +335,9 @@ function renderReminders() {
   }
   list.innerHTML = '';
   items.forEach((r, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'reminder-wrap';
+
     const row = document.createElement('div');
     row.className = 'reminder' + (r.enabled === false ? ' off' : '');
     row.innerHTML =
@@ -316,19 +345,58 @@ function renderReminders() {
       '<input type="text" placeholder="提醒内容，例如：开会" value="' + escapeAttr(r.text || '') + '">' +
       '<select>' +
         '<option value="daily">每天</option>' +
+        '<option value="workday">工作日</option>' +
+        '<option value="weekly">自定义星期</option>' +
         '<option value="once">仅一次</option>' +
       '</select>' +
       '<button class="icon-btn" title="删除">✕</button>';
     row.querySelector('input[type=time]').oninput = (e) => { r.time = e.target.value; };
     row.querySelector('input[type=text]').oninput = (e) => { r.text = e.target.value; };
+
     const sel = row.querySelector('select');
-    sel.value = r.repeat === 'once' ? 'once' : 'daily';
-    sel.onchange = (e) => { r.repeat = e.target.value; };
+    sel.value = ['once', 'workday', 'weekly'].includes(r.repeat) ? r.repeat : 'daily';
+    sel.onchange = (e) => {
+      r.repeat = e.target.value;
+      if (r.repeat === 'weekly' && (!Array.isArray(r.weekdays) || r.weekdays.length === 0)) {
+        r.weekdays = [1, 2, 3, 4, 5]; // 默认周一到周五，避免一片空白
+      }
+      renderReminders();
+    };
+
     row.querySelector('button').onclick = () => {
       cfg.reminders.splice(i, 1);
       renderReminders();
     };
-    list.appendChild(row);
+    wrap.appendChild(row);
+
+    // 「自定义星期」→ 展开七个勾选框
+    if (r.repeat === 'weekly') {
+      const bar = document.createElement('div');
+      bar.className = 'weekdays';
+      bar.innerHTML = '<span class="wl">重复于</span>';
+      WEEK_LABELS.forEach((label, day) => {
+        const on = Array.isArray(r.weekdays) && r.weekdays.includes(day);
+        const b = document.createElement('div');
+        b.className = 'wd' + (on ? ' on' : '');
+        b.textContent = label;
+        b.title = '周' + label;
+        b.onclick = () => {
+          const set = new Set(Array.isArray(r.weekdays) ? r.weekdays.map(Number) : []);
+          if (set.has(day)) set.delete(day); else set.add(day);
+          r.weekdays = [...set].sort((a, b) => a - b);
+          renderReminders();
+        };
+        bar.appendChild(b);
+      });
+      const hint = document.createElement('span');
+      hint.className = 'hint-mini';
+      const n = (r.weekdays || []).length;
+      hint.textContent = n === 0 ? '未选择 = 每天' : '';
+      bar.appendChild(hint);
+      wrap.appendChild(bar);
+    }
+
+    list.appendChild(wrap);
   });
 }
 
@@ -354,6 +422,12 @@ function collect() {
     if (!r.id) r.id = 'r' + Date.now() + '_' + i;
     if (!r.repeat) r.repeat = 'daily';
     if (r.enabled === undefined) r.enabled = true;
+    // 只有「自定义星期」才保留 weekdays，其余规则清掉避免残留脏数据
+    if (r.repeat === 'weekly') {
+      if (!Array.isArray(r.weekdays)) r.weekdays = [];
+    } else {
+      delete r.weekdays;
+    }
   });
   return cfg;
 }
@@ -420,6 +494,59 @@ load().catch((e) => {
     '<div style="padding:16px;background:#fef2f2;color:#b91c1c;border-radius:12px;margin-bottom:16px">' +
     '加载失败：' + e.message + '</div>');
 });
+
+// ---------------------------------------------------------------- 自动更新界面
+// 目的：以后程序升级改了设置页，用户无需手动刷新/清缓存，页面自己发现并重载。
+// 做法：记住首次拿到的界面版本，每 5 秒问一次服务器；版本变了说明换过界面 → 自动刷新。
+// 只在「没在编辑、没弹窗」时刷新，避免把用户刚敲了一半的输入冲掉。
+const UI_VERSION = new URLSearchParams(location.search).get('v') || '';
+let uiDirty = false;
+let uiLastVersion = UI_VERSION;
+
+// 用户一旦动过任何输入，就认为「有未保存的编辑」，先不打扰
+document.addEventListener('input', (e) => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
+    uiDirty = true;
+  }
+}, true);
+
+async function checkUiVersion() {
+  try {
+    const r = await api('/api/ui-version');
+    if (!r || !r.version) return;
+    if (uiLastVersion && r.version !== uiLastVersion) {
+      // 服务器已经换了界面。若用户正在编辑，就先挂个提示等他保存/离开；
+      // 若手头干净，直接静默刷新。
+      if (uiDirty) {
+        showReloadHint(r.version);
+      } else {
+        location.replace('/admin?v=' + r.version);
+      }
+      return;
+    }
+    uiLastVersion = uiLastVersion || r.version;
+  } catch {
+    /* 服务暂时不可用，下次再问 */
+  }
+}
+
+function showReloadHint(newVer) {
+  if ($('ui-reload-hint')) return;
+  const bar = document.createElement('div');
+  bar.id = 'ui-reload-hint';
+  bar.style.cssText =
+    'position:fixed;left:50%;transform:translateX(-50%);bottom:22px;z-index:99;' +
+    'display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:12px;' +
+    'background:#111827;color:#fff;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)';
+  bar.innerHTML = '<span>设置页有新版本，建议刷新</span>' +
+    '<button id="ui-reload-btn" style="border:0;border-radius:8px;padding:6px 12px;' +
+    'background:#fff;color:#111827;font-size:14px;cursor:pointer">立即刷新</button>';
+  document.body.appendChild(bar);
+  bar.querySelector('#ui-reload-btn').onclick = () => location.replace('/admin?v=' + newVer);
+}
+
+setInterval(checkUiVersion, 5000);
+
 </script>
 </body>
 </html>
