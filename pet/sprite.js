@@ -165,6 +165,30 @@ class PetSprite {
     this.hit.addEventListener('pointermove', (e) => this.onPointerMove(e), { signal: ac.signal });
     this.hit.addEventListener('click', () => this.onClick(), { signal: ac.signal });
     this.hit.addEventListener('contextmenu', (e) => this.onContextMenu(e), { signal: ac.signal });
+    // >>> 大肥鱼独立版注入（由 _dsh_probe/apply_pet_patch.py 管理，勿手改）>>>
+    // 双击宠物 = 收起当前常驻提醒（提醒气泡不再自动消失，需要用户主动取消）。
+    // 打宿主 POST /api/dismiss → 宿主清空 work-status → 下次轮询 state=null → 本地收气泡。
+    // 不抢单击：单击照旧播 clicks 动画 + 积分粒子（dblclick 是独立事件，两不打扰）。
+    this.hit.addEventListener(
+      'dblclick',
+      () => {
+        // 先本地立刻收（不等网络往返，手感即时），再通知宿主落状态。
+        if (this.workOn) {
+          this.workOn = false;
+          this.workText = null;
+          if (this.workTimer !== null) window.clearTimeout(this.workTimer);
+          this.workTimer = null;
+          this.renderBubble();
+        }
+        try {
+          fetch(ORIGIN + '/api/dismiss', { method: 'POST', cache: 'no-store' }).catch(() => {});
+        } catch (err) {
+          /* ignore */
+        }
+      },
+      { signal: ac.signal },
+    );
+    // <<< 大肥鱼独立版注入 <<<
     window.addEventListener('pointerup', (e) => this.onPointerUp(e), { signal: ac.signal });
     window.addEventListener('pointercancel', (e) => this.onPointerUp(e), { signal: ac.signal });
     this.hit.addEventListener('lostpointercapture', (e) => this.onPointerUp(e), { signal: ac.signal });
@@ -293,6 +317,14 @@ class PetSprite {
     this.sendBounds(x, y);
   }
 
+
+  /** 抛掷空间（逐屏 AABB）。AREAS/PANELS 变化时由 relayout() 置空重建——飞行中每帧重算太浪费 */
+  /** 抛掷空间（逐屏 AABB）。AREAS/PANELS 变化时由 relayout() 置空重建——飞行中每帧重算太浪费 */
+  /** 抛掷空间（逐屏 AABB）。AREAS/PANELS 变化时由 relayout() 置空重建——飞行中每帧重算太浪费 */
+  /** 抛掷空间（逐屏 AABB）。AREAS/PANELS 变化时由 relayout() 置空重建——飞行中每帧重算太浪费 */
+  /** 抛掷空间（逐屏 AABB）。AREAS/PANELS 变化时由 relayout() 置空重建——飞行中每帧重算太浪费 */
+  /** 抛掷空间（逐屏 AABB）。AREAS/PANELS 变化时由 relayout() 置空重建——飞行中每帧重算太浪费 */
+  /** 抛掷空间（逐屏 AABB）。AREAS/PANELS 变化时由 relayout() 置空重建——飞行中每帧重算太浪费 */
   /** 抛掷空间（逐屏 AABB）。AREAS/PANELS 变化时由 relayout() 置空重建——飞行中每帧重算太浪费 */
   throwSpaceOf() {
     if (!this.space || this.space.areas !== AREAS || this.space.panels !== PANELS) {
@@ -1024,13 +1056,17 @@ class PetSprite {
     this.stopMove(); // 菜单悬停期间宠物不漫游
     // 桌面专属工具根项（打开设置页 / 查看余额 / 回到初始位置）+ 共享菜单树（动作→分类→具体动画）
     const tools = [{ label: '打开设置页', action: 'open-site' }];
+    // 「收起提醒」只在真有提醒顶着时出现（上下文菜单项）——
+    // 提醒气泡现在是常驻的（不再自动消失），需要给用户第二个取消入口（双击宠物之外的）。
+    // 没提醒时不显示，免得菜单里挂个点了没反应的死项。
+    // ⚠️ 本块（⓪）不打 MARK：见 TARGETS 里第 4 参 False。
+    if (this.workOn) tools.push({ label: '收起提醒', action: 'dismiss-reminder' });
     if (this.pet.balanceEnabled) tools.push({ label: '查看余额', action: 'show-balance' });
     tools.push(
       // 独立版已摘掉「碎碎念」「对话」：二者都要 LLM，而独立版没有 ——
       // 宿主 /whisper 与 /chat 恒返回 {ok:false, reason:'unsupported'}（见 host/main.mjs）。
       // 留着只会让用户点了以为坏了，所以直接从菜单移除。
       { label: '回到初始位置', action: 'home' },
-      // >>> 大肥鱼独立版注入（由 _dsh_probe/apply_pet_patch.py 管理，勿手改）>>>
       {
         label: '调整大小（现在 ' + Math.round(Number(this.pet.size) || 462) + '）',
         children: [
@@ -1081,7 +1117,6 @@ class PetSprite {
       // 留着纯属重复。首项既是设置入口，也在菜单最上面，够用了。
       { label: '重启大肥鱼', action: 'restart' },
       { label: '退出大肥鱼', action: 'quit' },
-      // <<< 大肥鱼独立版注入 <<<
     );
     const tree = tools.concat(S.buildMenuTree(this.animations));
     if (!tree.length) return;
@@ -1130,6 +1165,21 @@ class PetSprite {
       return;
     }
     // >>> 大肥鱼独立版注入（由 _dsh_probe/apply_pet_patch.py 管理，勿手改）>>>
+    if (leaf.action === 'dismiss-reminder') {
+      // 「收起提醒」：与双击宠物同一条链路 —— 打宿主 /api/dismiss（宿主清空 work-status），
+      // 本地先即时收气泡（不等下一轮 1s 轮询），手感更跟手。
+      this.workOn = false;
+      this.workText = null;
+      if (this.workTimer !== null) window.clearTimeout(this.workTimer);
+      this.workTimer = null;
+      this.renderBubble();
+      try {
+        fetch(ORIGIN + '/api/dismiss', { method: 'POST', cache: 'no-store' }).catch(() => {});
+      } catch (err) {
+        /* ignore */
+      }
+      return;
+    }
     if (leaf.action === 'quit') {
       // 优雅退出：打宿主 /shutdown（与托盘「退出大肥鱼」同一条链路）。
       // 宿主一退，渲染端由 host-liveness 的宿主存活探测自行退出；这里不等响应。

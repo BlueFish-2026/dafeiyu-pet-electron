@@ -125,10 +125,44 @@ let helperFetchedConfig = false;
 let workStatus = { state: null, task: null, ts: 0 };
 /** 余额手动触发计数（渲染端 1s 轮询，count 变化即重播余额动画） */
 let balanceTriggerCount = 0;
+/** 提醒提示音计数（渲染端 1s 轮询，seq 变化即响一声） */
+let reminderSoundSeq = 0;
+/** 当前生效的提醒（常驻气泡的内容来源；dismissReminder 清空它） */
+let activeReminder = null;
 /** 气泡广播缓存：petId → { text, image, ts } */
 const broadcastCache = new Map();
 /** 提醒收起定时器句柄（连续触发时用于取消上一个） */
 const bubbleTimers = new Map();
+
+/**
+ * 看门狗：渲染进程「最后一次证明自己活着」的时刻（ms）。
+ *
+ * 为什么需要它（2026-10-08 实锤的一次事故）：
+ *   宠物渲染进程最迟 15:25 就静默挂了（helper.log 从 11:05 起一行没写、work-status
+ *   推过去也没人取），可宿主这边**一切日志正常** —— 提醒引擎照跑、状态照存，只有
+ *   「气泡 / 动画 / 系统通知」全都没发生。用户是完全无感的：提醒响了，但他什么都没看见。
+ *
+ * 信号从哪来：渲染端本来就有两个 1s 轮询（/seat-timer 角标、/work-status 提醒通道），
+ *   拿现成的用，渲染端一行都不用改。只要有心跳，就说明那只宠物还活着。
+ *
+ * 与 child.on('exit') 的分工：exit 只能抓到「进程真的死了」；而这次事故现场是进程
+ *   **没退出但也不干活**（卡死 / 窗口被系统回收 / 轮询循环断掉），exit 永远不会响。
+ *   心跳判定能覆盖这两种情况，所以二者是互补的，不是重复。
+ */
+let lastHelperPing = 0;
+/** 看门狗已连续重启次数（成功恢复后清零，用于指数退避封顶） */
+let watchdogRestarts = 0;
+/** 看门狗检查定时器 */
+let watchdogTimer = null;
+
+/**
+ * 看门狗参数。
+ *   STALE_MS：多久没心跳算「假死」。渲染端 1s 一轮询，取 120s 是**故意留足误判余量** ——
+ *     电脑休眠 / 系统卡顿 / 长 GC 都可能让轮询暂停一会儿，不能一停就杀。
+ *   CHECK_MS：30s 检查一次，配合 STALE_MS 最坏约 150s 发现并恢复。
+ */
+const WATCHDOG_STALE_MS = 120_000;
+const WATCHDOG_CHECK_MS = 30_000;
 
 // ---------------------------------------------------------------- 工具
 
@@ -231,11 +265,18 @@ function readBody(req) {
  *
  * 时序（渲染端 1s 轮询，故间隔取 1.5s 保证两次变化都被看到）：
  *   t=0      state=null    → 先把状态清空，保证接下来那次 stateChanged 为 true
- *   t=1.5s   state=目标档位 → 点亮气泡 + 播档位动画
- *   t=N      state=null    → 收起，为下次做准备
+ *   t=1.5s   state=目标档位 → 点亮气泡（**常驻**）+ 播档位动画 + 响一声提示音
+ *   t=N      —— 不再自动清空：气泡一直顶着，直到用户主动取消（见 dismissReminder）
+ *
+ * 【为什么改成常驻（2026-10-08 用户要求）】
+ *   旧行为是 t=1.5s+bubbleSeconds 后自动清空 —— 气泡只亮 10~20 秒，用户一转头就错过，
+ *   根本起不到"提醒"的作用。用户明确要求「和旧的大肥鱼一样：一声蜂鸣，然后头顶一直
+ *   顶着提醒的事件」。所以现在只有三种情况会让气泡消失：
+ *     ① 用户双击宠物（→ dismissReminder）
+ *     ② 用户从右键菜单点「收起提醒」（→ dismissReminder）
+ *     ③ 下一次提醒覆盖掉当前这条
  */
 function fireReminder(kind, text) {
-  const bubbleMs = Math.max(5, Number(userCfg.bubbleSeconds) || 20) * 1000;
   // 久坐 → 档位 3「等待」（原地踱步张望 / 伸懒腰，循环播）
   // 定时 → 档位 4「完成」（雀跃庆祝，播一遍）
   const state = kind === 'sedentary' ? 'waiting' : 'success';
@@ -243,10 +284,16 @@ function fireReminder(kind, text) {
   if (bubbleTimers.has(kind)) clearTimeout(bubbleTimers.get(kind));
 
   workStatus = { state: null, task: null, ts: Date.now() };
+  // 记下当前提醒，供 /api/dismiss 与 /api/state 使用
+  activeReminder = { kind, text, state };
 
   const t1 = setTimeout(() => {
     workStatus = { state, task: text, ts: Date.now() };
     log(`提醒触发 [${kind}] ${text}`);
+
+    // 提示音：让渲染端播一声（CSP 只允许 http，故由宿主提供音频）。
+    // 渲染端 1s 轮询 /work-status，这里同时递增 reminderSoundSeq —— 变化即响。
+    reminderSoundSeq++;
 
     if (userCfg.systemNotification) {
       try {
@@ -263,15 +310,41 @@ function fireReminder(kind, text) {
         log('系统通知失败：' + (e && e.message));
       }
     }
-
-    const t2 = setTimeout(() => {
-      workStatus = { state: null, task: null, ts: Date.now() };
-      bubbleTimers.delete(kind);
-    }, bubbleMs);
-    bubbleTimers.set(kind, t2);
+    bubbleTimers.delete(kind + ':pre');
   }, 1500);
 
   bubbleTimers.set(kind + ':pre', t1);
+}
+
+/**
+ * 主动收起当前提醒（双击宠物 / 右键菜单「收起提醒」都会打到这里）。
+ * 清空 work-status → 渲染端下一次 1s 轮询读到 state=null 即收起气泡。
+ */
+function dismissReminder(reason) {
+  if (!activeReminder && !workStatus?.state) return false;
+  const was = activeReminder ? activeReminder.text : workStatus?.task;
+  activeReminder = null;
+  workStatus = { state: null, task: null, ts: Date.now() };
+  for (const t of bubbleTimers.values()) clearTimeout(t);
+  bubbleTimers.clear();
+  log(`提醒已收起（${reason}）：${was || ''}`);
+  return true;
+}
+
+/**
+ * 某条提醒的**生效条件被取消**时（重置久坐计时 / 关掉久坐开关 / 关掉定时开关），
+ * 同步把它顶着的常驻气泡收掉。
+ *
+ * 为什么需要：气泡从 2026-10-08 起是**常驻**的（不再自动消失），
+ * 于是「条件没了但气泡还挂着」变得很反直觉 —— 用户会以为自己的操作没生效
+ * （实测反馈：「为啥我重置了提醒，这个提醒还在呢」）。
+ *
+ * ⚠️ **严格按 kind 精确匹配**：久坐（sedentary）与定时（schedule）是两条独立提醒，
+ *    重置久坐绝不能顺手把定时提醒的气泡也收掉。
+ */
+function dismissReminderKind(kind, reason) {
+  if (!activeReminder || activeReminder.kind !== kind) return false;
+  return dismissReminder(reason);
 }
 
 /** 把提醒文本作为气泡广播（备用通道：任意文本，但动画固定为 events.whisper） */
@@ -342,7 +415,35 @@ async function handleRoute(req, res) {
 
   // ---------- 工作状态（提醒通道） ----------
   if (rest === 'work-status') {
-    return sendJson(res, 200, workStatus, { 'cache-control': 'no-cache, no-store' });
+    noteHelperPing(); // 看门狗心跳：渲染端 1s 轮询这条，是「提醒有没有人在看」的直接证据
+    // 捎带 reminderSoundSeq：渲染端比对上次值，变了就响一声提醒音（避免独立再开一条轮询）。
+    return sendJson(
+      res,
+      200,
+      { ...workStatus, soundSeq: reminderSoundSeq },
+      { 'cache-control': 'no-cache, no-store' },
+    );
+  }
+
+  // ---------- 提醒提示音（CSP 只允许 http，故由宿主回吐系统 wav） ----------
+  if (rest === 'reminder-sound') {
+    // 用户可从设置页指定声音名（见 userCfg.reminderSound）；默认 Windows Notify.wav。
+    // 只允许读 C:\Windows\Media 下的 .wav，杜绝任意路径读取。
+    const mediaDir = process.env.SystemRoot ? join(process.env.SystemRoot, 'Media') : 'C:\\Windows\\Media';
+    const chosen = String(userCfg.reminderSound || 'Windows Notify.wav').replace(/[\\/]/g, '');
+    const name = chosen.toLowerCase().endsWith('.wav') ? chosen : chosen + '.wav';
+    const file = join(mediaDir, name);
+    const safe = resolve(file).startsWith(resolve(mediaDir)) && name.indexOf('..') < 0;
+    const fallback = join(mediaDir, 'Windows Notify.wav');
+    const use = safe && existsSync(file) ? file : fallback;
+    if (!existsSync(use)) return sendText(res, 404, 'dsh-pet: no sound file');
+    res.writeHead(200, {
+      'content-type': 'audio/wav',
+      'cache-control': 'no-cache, no-store',
+      'access-control-allow-origin': '*',
+    });
+    createReadStream(use).pipe(res);
+    return;
   }
 
   // ---------- 气泡广播 ----------
@@ -432,7 +533,19 @@ async function handleApi(path, req, res, url) {
       petConfigPath: join(ROOT, 'config', 'user-config.json'),
       version: app.getVersion(),
       reminderState: reminder.exportState(),
+      // 看门狗诊断：管理页 / 探针据此判断「宠物渲染进程还有没有在呼吸」
+      helperAlive: !!helperProc,
+      helperLastPingAgoSec: lastHelperPing ? Math.round((Date.now() - lastHelperPing) / 1000) : null,
+      helperWatchdogRevives: watchdogRestarts,
+      // 当前是否有常驻提醒（管理页可据此显示"收起提醒"按钮）
+      activeReminder,
     });
+  }
+
+  // 收起当前常驻提醒（双击宠物 / 右键菜单「收起提醒」调它）
+  if (action === 'dismiss' && req.method === 'POST') {
+    const ok = dismissReminder('用户主动取消');
+    return sendJson(res, 200, { ok: true, dismissed: ok });
   }
 
   // 保存整份用户配置（管理页表单提交）
@@ -481,6 +594,7 @@ async function handleApi(path, req, res, url) {
 
   // 久坐计时快照（宠物头顶计时角标每秒轮询；禁止缓存，否则角标不刷新）
   if (action === 'seat-timer' && req.method === 'GET') {
+    noteHelperPing(); // 看门狗心跳（渲染端 1s 一次，与 /work-status 互为冗余）
     return sendJson(res, 200, reminder.getSeatInfo(), { 'cache-control': 'no-store' });
   }
 
@@ -488,6 +602,9 @@ async function handleApi(path, req, res, url) {
   // 不重启渲染进程：角标是 1s 轮询的，下一个周期自然读到 minutes=0 就自己隐藏了。
   if (action === 'seat-reset' && req.method === 'POST') {
     const r = reminder.resetSeat();
+    // 重置 = 重新开始，顺手把顶着的**久坐**气泡收掉（气泡常驻，不收会一直挂着 → 以为没生效）。
+    // ⚠️ 只收 sedentary；这时的定时提醒（若是它顶着）一律不动。
+    if (r.ok) r.dismissed = dismissReminderKind('sedentary', '重置久坐计时');
     return sendJson(res, r.ok ? 200 : 400, r);
   }
 
@@ -546,6 +663,12 @@ async function handleApi(path, req, res, url) {
     saveUserConfig(merged);
     userCfg = merged;
     log(`右键菜单改了设置：${key} = ${valRaw}`);
+
+    // 关掉「久坐」/「定时」开关时，把它顶着的常驻气泡一并收起 —— 同 seat-reset 的道理：
+    // 提醒都关了，气泡还挂着只会让人以为开关没生效。⚠️ 各自只收自己的 kind。
+    if ((key === 'sedentary' || key === 'schedule') && (valRaw === '0' || valRaw === 'false')) {
+      dismissReminderKind(key, key === 'sedentary' ? '久坐提醒已关闭' : '定时提醒已关闭');
+    }
 
     // 哪些改动渲染进程需要重启才能看到：
     //   balance.enabled → 决定「查看余额」菜单项在不在、余额动画开不开
@@ -772,6 +895,75 @@ function restartHelper() {
     helperTimer = null;
     startHelper();
   }, 600);
+}
+
+// ---------------------------------------------------------------- 渲染进程看门狗
+
+/**
+ * 渲染进程心跳上报 —— 由两个 1s 轮询端点调用（/work-status、/seat-timer）。
+ * 只要还有人来取数据，就说明那只宠物还活着。
+ */
+function noteHelperPing() {
+  lastHelperPing = Date.now();
+  if (watchdogRestarts > 0) {
+    // 恢复正常了，退避计数清零
+    log(`渲染进程心跳恢复（看门狗第 ${watchdogRestarts} 次重启后已稳定）`);
+    watchdogRestarts = 0;
+  }
+}
+
+/**
+ * 看门狗主体：定期检查渲染进程还有没有心跳。
+ *
+ * 判定「假死」的三个前提，缺一不杀（避免误伤）：
+ *   ① 已经在跑（lastHelperPing 有过值）—— 刚启动还没轮询过不算；
+ *   ② 距上次心跳超过 WATCHDOG_STALE_MS；
+ *   ③ 当前确实挂着一个渲染进程（helperProc 非空，否则交给 exit 链路处理）；
+ *   ④ 还活着但超过 10 分钟没心跳 —— 判为**僵死**，直接 kill 掉让它重启（只重启不管用，因为
+ *      进程没退，startHelper 会先 detach 掉它再起新的，等于白杀一轮；这里主动清场）。
+ */
+function checkHelperWatchdog() {
+  if (stopping) return;
+  if (!lastHelperPing) return; // 从没心跳过 = 还没起来，交给 exit/启动链路
+  const silentMs = Date.now() - lastHelperPing;
+  if (silentMs <= WATCHDOG_STALE_MS) return; // 心跳正常
+
+  // 真僵死了：进程还在但不干活
+  if (!helperProc) {
+    // 没有进程在跑（等重启中），把心跳计时重置，免得下一轮又立刻触发
+    lastHelperPing = Date.now();
+    return;
+  }
+
+  watchdogRestarts++;
+  if (watchdogRestarts > 5) {
+    // 连救 5 次都救不回来，说明不是「偶发假死」而是环境问题（如 GPU 崩溃循环），
+    // 再硬杀只是徒劳，改为只在日志里留痕，不无限重启打扰用户。
+    if (watchdogRestarts === 6) {
+      log('渲染进程看门狗：连续重启 5 次仍未恢复心跳，已停止自动救援（详见 data/helper.log）');
+    }
+    return;
+  }
+
+  log(
+    `渲染进程看门狗：已 ${Math.round(silentMs / 1000)}s 无心跳，判定假死，第 ${watchdogRestarts} 次自动重启`,
+  );
+  // 关键顺序：先重置心跳，避免 startHelper 起来后、第一次轮询到来前又被判定一次
+  lastHelperPing = Date.now();
+  helperRestarts = 0; // 看门狗是「我来救你」，不是「你又崩了」——不计入崩溃退避
+  restartHelper();
+}
+
+/** 启动看门狗（在 initReminders 之后调用，保证端点已就位） */
+function startHelperWatchdog() {
+  if (watchdogTimer) return;
+  watchdogTimer = setInterval(() => checkHelperWatchdog(), WATCHDOG_CHECK_MS);
+  if (watchdogTimer.unref) watchdogTimer.unref();
+}
+
+function stopHelperWatchdog() {
+  if (watchdogTimer) clearInterval(watchdogTimer);
+  watchdogTimer = null;
 }
 
 // ---------------------------------------------------------------- HTTP 服务
@@ -1010,11 +1202,13 @@ app.whenReady().then(async () => {
 
   initReminders();
   startHelper();
+  startHelperWatchdog(); // 渲染进程看门狗：宠物静默假死时自动拉起（详见 checkHelperWatchdog）
   createTray();
 });
 
 app.on('before-quit', () => {
   stopping = true;
+  stopHelperWatchdog();
   if (reminder) {
     reminder.stop();
     try {

@@ -58,6 +58,14 @@ const { HOST_POLL_MS, hostIsGone, isBrokenPipeError, parseHostPid } = require('.
 // 允许无用户手势直接播放（余额动画等）
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
+// 诊断用：设了 DSH_PET_DEBUG_PORT 才开渲染进程调试口（默认关闭，绝不影响正常使用）。
+// 用途：定位「提醒推了但界面上看不见」这类只有渲染端才知道的问题 ——
+// 挂 CDP 进去能直接读 DOM（气泡 class、视频元素、轮询情况），比看日志硬得多。
+if (process.env.DSH_PET_DEBUG_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.DSH_PET_DEBUG_PORT);
+  app.commandLine.appendSwitch('remote-allow-origins', '*');
+}
+
 // 显式定名：Helper 是被 `electron.exe <main.js>` 直接拉起的，Electron 取不到 app 名会回落成
 // "Electron"，userData 便落到 %APPDATA%\Electron —— 那是所有这么跑的 Electron 脚本的公共目录，
 // 我们的 DPI 缓存与 Chromium profile 都会和别人混在一起。必须赶在任何 getPath('userData') 之前设。

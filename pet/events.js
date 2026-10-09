@@ -74,18 +74,37 @@ PetSprite.prototype.onWorkTick = function onWorkTick(snapshot, tick) {
       : undefined;
   this.workText = (snapshot && snapshot.task) || configuredText || null;
   const terminal = state === 'success' || state === 'error';
+  // >>> 大肥鱼独立版注入（由 _dsh_probe/apply_pet_patch.py 管理，勿手改）>>>
+  // 提醒提示音：宿主每次触发提醒会在 /work-status 里递增 soundSeq。比对上次值，变了就响一声。
+  // 只在「新的提醒真的来了」时响（soundSeq 单调递增），同一条提醒的后续 tick 不会重复响。
+  if (snapshot && typeof snapshot.soundSeq === 'number') {
+    if (this.__dshSfxSeq === undefined) this.__dshSfxSeq = snapshot.soundSeq; // 首次不响（刚启动）
+    else if (snapshot.soundSeq !== this.__dshSfxSeq) {
+      this.__dshSfxSeq = snapshot.soundSeq;
+      if (this.pet.reminderSoundEnabled !== false) {
+        try {
+          // 每次都新建 Audio：允许连续提醒连续响（复用同一个元素会被上一次播放状态牵制）。
+          // 路径走 BASE（= ORIGIN + '/dsh-pet-7340'）：宿主把音频挂在 PREFIX 下，不是 /api/。
+          const sfx = new Audio(BASE + '/reminder-sound?t=' + snapshot.soundSeq);
+          sfx.volume = 0.85;
+          void sfx.play().catch(() => {});
+        } catch (err) {
+          /* 静默：放不出声不影响提醒本身 */
+        }
+      }
+    }
+  }
+  // <<< 大肥鱼独立版注入 <<<
   // 气泡点亮/收起只在状态变化时动作：同状态后续 tick（todo 文案更新、其它会话事件搅动 ts）
   // 不重新点亮**已自动收起的终态气泡**——否则"任务完成"的气泡会被后续 ts 变化反复弹回（Bug 2，
   // 与浏览器 workBubbleOn 同一语义）。
   if (stateChanged) {
     this.workOn = true;
     if (this.workTimer !== null) window.clearTimeout(this.workTimer);
-    this.workTimer = terminal
-      ? window.setTimeout(() => {
-          this.workOn = false;
-          this.renderBubble();
-        }, BUBBLE_DURATION_MS)
-      : null; // 非终态：常驻，不设自动收起
+    // 【独立版改动】气泡一律常驻、不自动收起 —— 见 apply_pet_patch.py 块④b 说明。
+    // 上游原逻辑：terminal ? setTimeout(10s 后收起) : null
+    // 现在：终态也常驻，由用户主动取消（双击宠物 / 右键菜单「收起提醒」）。
+    this.workTimer = null;
   }
   this.renderBubble();
   // 循环语义（与浏览器 setOnce 一致）：终态播一遍回 idle；非终态多候选档位播一遍 →

@@ -73,8 +73,12 @@ export const DEFAULT_USER_CONFIG = {
   scheduleEnabled: true,
   /** 是否用系统通知（右下角 toast）配合提醒 */
   systemNotification: true,
-  /** 提醒气泡停留秒数 */
+  /** 提醒气泡停留秒数（⚠️ 已废弃：气泡现在常驻，直到用户主动收起。字段保留仅为兼容旧配置） */
   bubbleSeconds: 20,
+  /** 是否在提醒触发时响一声提示音 */
+  reminderSoundEnabled: true,
+  /** 提示音文件名（取 C:\Windows\Media 下的 .wav；默认 Windows Notify.wav） */
+  reminderSound: 'Windows Notify.wav',
 };
 
 /** 深合并：对象递归，数组与标量整体替换（用户配置优先） */
@@ -161,6 +165,8 @@ export function buildPetConfig(userCfg) {
         sedentaryMinutes: Number(userCfg.sedentary.intervalMin) || 45,
         scheduleEnabled: userCfg.scheduleEnabled !== false,
         notifyEnabled: !!userCfg.systemNotification,
+        // 提醒提示音开关（渲染端据此决定收不收 /work-status 里的 soundSeq 变化）
+        reminderSoundEnabled: userCfg.reminderSoundEnabled !== false,
         corner: userCfg.pet.corner,
         position: {
           corner: userCfg.pet.corner,

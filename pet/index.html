@@ -105,7 +105,10 @@
       /* 碎碎念变体：与浏览器 overlay 一致 —— 字号缩到余额气泡的 0.75、取消 nowrap 允许换行、
          宽度随文字数量自适应（短句窄框、长句封顶绕行），高度随行数自然增长 */
       .pet-bubble.is-whisper {
-        font-size: calc(var(--pet-size, 462px) * 0.034);
+        /* 【独立版改动】系数 0.034 → 0.050：提醒气泡走的就是这个变体，
+           原系数比余额气泡（0.0455）还小 25%，宠物调小后字小到看不清。
+           上游碎碎念已废（whisperEnabled 默认 false + 菜单项已摘），改它零副作用。 */
+        font-size: calc(var(--pet-size, 462px) * 0.050);
         min-width: calc(var(--pet-size, 462px) * 0.1);
         max-width: calc(var(--pet-size, 462px) * 0.5);
         white-space: normal;
