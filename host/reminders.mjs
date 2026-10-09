@@ -94,6 +94,10 @@ export class ReminderEngine {
     this.seatStart = null;
     /** 下次允许久坐提醒的时刻（ms）——实现 snooze */
     this.nextSedentaryAt = 0;
+    /** 排期时用的「多久提醒一次」值（ms）——用于检测设置页热改间隔后重排 */
+    this.armedIntervalMs = 0;
+    /** 本次就座是否已提醒过——热改间隔时决定「重排」还是「保持 snooze 节奏」 */
+    this.firedThisSeat = false;
     /** 定时提醒最近一次触发记录：id → 日期串 */
     this.firedOn = new Map();
     this.timer = null;
@@ -139,6 +143,8 @@ export class ReminderEngine {
     this.seatStart = now;
     const intervalMs = Math.max(1, Number(s.intervalMin) || 45) * 60_000;
     this.nextSedentaryAt = now + intervalMs;
+    this.armedIntervalMs = intervalMs;
+    this.firedThisSeat = false;
     this.log('久坐计时已手动重置，从现在重新计时');
     return { ok: true, minutes: 0 };
   }
@@ -214,7 +220,18 @@ export class ReminderEngine {
     if (this.seatStart === null) {
       this.seatStart = now;
       this.nextSedentaryAt = now + intervalMs;
+      this.armedIntervalMs = intervalMs;
+      this.firedThisSeat = false;
       return;
+    }
+
+    // 热改间隔：设置页把「多久提醒一次」改小/改大后，让新值立刻生效 ——
+    // 否则角标按新间隔转红（over），提醒却仍按旧间隔排期，看着像"提醒没了"。
+    // 尚未提醒过才按新间隔重排（改小后若已超时，nextSedentaryAt 落到过去 → 下一 tick 立即响）；
+    // 已提醒过则保持 snooze 节奏（间隔只管"首次坐多久提醒一次"）。
+    if (this.armedIntervalMs !== intervalMs) {
+      if (!this.firedThisSeat) this.nextSedentaryAt = this.seatStart + intervalMs;
+      this.armedIntervalMs = intervalMs;
     }
 
     if (now >= this.nextSedentaryAt) {
@@ -222,6 +239,7 @@ export class ReminderEngine {
       const texts = Array.isArray(s.texts) && s.texts.length > 0 ? s.texts : ['坐太久了，起来动动吧'];
       const text = texts[Math.floor(Math.random() * texts.length)].replace(/\{min\}/g, String(minutes));
       this.fireNow('sedentary', text);
+      this.firedThisSeat = true;
       this.nextSedentaryAt = now + snoozeMs;
     }
   }
