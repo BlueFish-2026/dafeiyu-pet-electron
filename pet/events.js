@@ -419,7 +419,7 @@ function startLoops() {
       'font-size:calc(var(--pet-size,462px) * 0.039);font-weight:700;line-height:1;',
       'white-space:nowrap;pointer-events:none;z-index:4;opacity:0;',
       'box-shadow:0 1px 3px rgba(0,0,0,0.22);',
-      'transition:opacity .25s ease,background-color .25s ease,border-color .25s ease}',
+      'transition:opacity .25s ease,background-color .25s ease,border-color .25s ease,top .18s ease}',
       '.pet-timer.is-on{opacity:1}',
       '.pet-timer.is-over{background:rgba(208,42,42,0.9);border-color:rgba(255,143,179,0.9)}',
       '.pet-timer-clock{width:1em;height:1em;flex:0 0 auto}',
@@ -442,6 +442,17 @@ function startLoops() {
     this.timerPill = pill;
     this.timerPillText = pill.querySelector('.pet-timer-text');
     this.timerPillShown = false;
+    // 【独立版修复 2026-10-09】角标不再固定 top：气泡从固定底边向上长高（提醒文案一多行就顶到角标），
+    // 而角标 z-index(=4) > 气泡(=3)，会盖住气泡首行。改成「有气泡时角标自动抬到气泡正上方」。
+    // 定位随气泡尺寸/显隐变化实时重算：ResizeObserver 管长高、MutationObserver 管显隐。
+    this.positionTimerPill();
+    if (!this.__timerPillRO && typeof ResizeObserver !== 'undefined' && this.bubble) {
+      const repro = () => this.positionTimerPill();
+      this.__timerPillRO = new ResizeObserver(repro);
+      this.__timerPillRO.observe(this.bubble);
+      this.__timerPillMO = new MutationObserver(repro);
+      this.__timerPillMO.observe(this.bubble, { attributes: true, attributeFilter: ['class'] });
+    }
   };
 
   PetSprite.prototype.renderTimerPill = function renderTimerPill(info) {
@@ -460,6 +471,26 @@ function startLoops() {
       this.timerPill.classList.toggle('is-on', show);
       this.timerPillShown = show;
     }
+    this.positionTimerPill();
+  };
+
+  // 角标定位：无气泡 → 回落到 CSS 默认 top（-0.106×size，贴头顶正上方）；
+  // 有气泡 → 抬到气泡顶边之上（气泡固定底边、向上长高，行数越多抬得越高）。
+  // 用 offsetTop/offsetHeight（布局 px）而非 getBoundingClientRect，规避页面级 setZoomFactor
+  // 缩放带来的坐标系错位；间隙随 --pet-size 等比，与气泡/角标同一套缩放约定。
+  PetSprite.prototype.positionTimerPill = function positionTimerPill() {
+    if (!this.timerPill) return;
+    const bubbleOn = !!(this.bubble && this.bubble.classList.contains('is-on'));
+    if (!bubbleOn) {
+      // 没气泡：清掉内联 top，让 CSS 默认值（-0.106×size）生效
+      if (this.timerPill.style.top) this.timerPill.style.top = '';
+      return;
+    }
+    const cssSize = this.el ? getComputedStyle(this.el).getPropertyValue('--pet-size') : '';
+    const size = parseFloat(cssSize) || 462;
+    const gap = size * 0.010; // 气泡顶与角标底之间的间隙
+    const top = this.bubble.offsetTop - gap - this.timerPill.offsetHeight;
+    this.timerPill.style.top = top.toFixed(1) + 'px';
   };
 
   for (const s of sprites) s.mountTimerPill();
