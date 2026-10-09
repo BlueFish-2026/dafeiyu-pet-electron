@@ -1,0 +1,27 @@
+{
+  "version": "1.1.0",
+  "files": [
+    "CHANGELOG.md",
+    "README.md",
+    "config/pet-config.default.json",
+    "host/balance.mjs",
+    "host/config.mjs",
+    "host/holiday.mjs",
+    "host/main.mjs",
+    "host/reminders.mjs",
+    "host/updater.mjs",
+    "host/version.mjs",
+    "pet/constants.js",
+    "pet/events.js",
+    "pet/host-liveness.js",
+    "pet/index.html",
+    "pet/main.js",
+    "pet/package.json",
+    "pet/pointer-target.js",
+    "pet/preload.js",
+    "pet/renderer.js",
+    "pet/shared-core.js",
+    "pet/sprite.js",
+    "web/admin.html"
+  ]
+}

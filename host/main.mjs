@@ -37,6 +37,7 @@ import { ROOT, DATA_DIR, ensureDirs, loadUserConfig, saveUserConfig, buildPetCon
 import { queryBalance, resolveApiKey } from './balance.mjs';
 import { ReminderEngine } from './reminders.mjs';
 import { HolidayCalendar } from './holiday.mjs';
+import { checkUpdate, applyUpdate, currentVersion } from './updater.mjs';
 
 const PREFIX = '/dsh-pet-7340';
 const HOST_NAME = 'dsh-pet-standalone';
@@ -532,6 +533,7 @@ async function handleApi(path, req, res, url) {
       hasKey: !!apiKeyInfo.key,
       petConfigPath: join(ROOT, 'config', 'user-config.json'),
       version: app.getVersion(),
+      appVersion: currentVersion(),
       reminderState: reminder.exportState(),
       // 看门狗诊断：管理页 / 探针据此判断「宠物渲染进程还有没有在呼吸」
       helperAlive: !!helperProc,
@@ -590,6 +592,43 @@ async function handleApi(path, req, res, url) {
     sendJson(res, 200, { ok: true, restarting: true });
     setTimeout(() => restartApp(), 300);
     return;
+  }
+
+  // 检查更新（内置自动更新；只读，不落盘）—— 设置页「检查更新」
+  if (action === 'check-update' && req.method === 'GET') {
+    try {
+      const r = await checkUpdate();
+      return sendJson(res, 200, { ok: true, ...r }, { 'cache-control': 'no-store' });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: String((e && e.message) || e) }, { 'cache-control': 'no-store' });
+    }
+  }
+
+  // 应用更新（设置页「立即更新」）：只拉改动的小文本文件 → 原子落盘 → 重启生效。
+  // 顺序刻意如此：先把下载+落盘做完再回响应（失败如实返回，绝不满口答应），最后才重启。
+  // 重启会掐断这条 HTTP 连接，所以放在 setTimeout 里、等响应发完再动手。
+  if (action === 'apply-update' && req.method === 'POST') {
+    try {
+      const r = await checkUpdate();
+      if (!r.hasUpdate) {
+        return sendJson(res, 200, { ok: true, updated: false, current: r.current, latest: r.latest });
+      }
+      const written = await applyUpdate(ROOT, r.files);
+      log(`自动更新：v${r.current} → v${r.latest}，已写入 ${written.length} 个文件，即将重启`);
+      sendJson(res, 200, {
+        ok: true,
+        updated: true,
+        from: r.current,
+        to: r.latest,
+        count: written.length,
+        restarting: true,
+      });
+      setTimeout(() => restartApp(), 600);
+      return;
+    } catch (e) {
+      log('自动更新失败：' + ((e && e.message) || e));
+      return sendJson(res, 200, { ok: false, error: String((e && e.message) || e) });
+    }
   }
 
   // 久坐计时快照（宠物头顶计时角标每秒轮询；禁止缓存，否则角标不刷新）
