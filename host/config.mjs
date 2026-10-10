@@ -39,6 +39,8 @@ export const DEFAULT_USER_CONFIG = {
   deepseekApiKey: '',
   /** 是否自动从 DSH 的 ~/.dsh/.credentials.yaml 导入 Key（仅在上面为空时生效） */
   autoImportKeyFromDsh: true,
+  /** 开机自启：登录 Windows 后自动拉起桌宠（写系统登录启动项） */
+  autoStart: false,
   /** 宠物外观 */
   pet: {
     /** 显示尺寸（px，466 是原始素材尺寸） */

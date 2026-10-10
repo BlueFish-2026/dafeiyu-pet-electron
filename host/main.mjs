@@ -568,6 +568,7 @@ async function handleApi(path, req, res, url) {
     apiKeyInfo = resolveApiKey(userCfg);
     log(`配置已更新（密钥来源：${apiKeyInfo.from}）`);
     pushPetConfigChanged();
+    applyAutoStart(merged.autoStart); // 开机自启改动即时写系统登录项
     if (oldKey !== apiKeyInfo.key) balanceTriggerCount++;
     return sendJson(res, 200, { ok: true, config: userCfg });
   }
@@ -1132,6 +1133,24 @@ function restartApp() {
 }
 
 /**
+ * 开机自启 —— 用 Electron 内置的 setLoginItemSettings 写系统「登录时启动」项。
+ * 不自己写注册表：Electron 已封装平台差异（Windows 写 HKCU\...\Run，macOS 写登录项）。
+ * ⚠️ 必须显式给 path + args（electron.exe + 宿主入口脚本）—— 否则登录时拉起的是裸 electron.exe，
+ *    没有脚本参数，等于什么都没启动。
+ */
+function applyAutoStart(enabled) {
+  const on = !!enabled;
+  try {
+    app.setLoginItemSettings({ openAtLogin: on, path: ELECTRON_EXE, args: [HOST_MAIN] });
+    log(`开机自启已${on ? '开启' : '关闭'}`);
+    return true;
+  } catch (e) {
+    log('设置开机自启失败：' + ((e && e.message) || e));
+    return false;
+  }
+}
+
+/**
  * 托盘图标 —— 独立版的「门把手」。
  *
  * 宠物本体是个无边框透明窗口，右键弹的是动作菜单，没有「关闭」；宿主自己又没有窗口。
@@ -1208,6 +1227,7 @@ app.whenReady().then(async () => {
   petConfig = buildPetConfig(userCfg);
   apiKeyInfo = resolveApiKey(userCfg);
   log(`余额密钥来源：${apiKeyInfo.from}`);
+  applyAutoStart(userCfg.autoStart); // 启动时按配置同步系统登录项（防止被外部改动后与配置不一致）
 
   // 前置检查：Electron 与 helper 是否就位
   if (!existsSync(ELECTRON_EXE)) {

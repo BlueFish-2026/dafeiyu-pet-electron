@@ -244,6 +244,10 @@
       <span>配合系统通知<small>提醒时额外弹一条右下角系统通知</small></span>
       <div class="tg" id="tg-notify"></div>
     </div>
+    <div class="switch" style="margin-top:12px">
+      <span>开机自启<small>登录 Windows 后自动启动桌宠（写系统登录启动项）</small></span>
+      <div class="tg" id="tg-autostart"></div>
+    </div>
     <div class="field" style="margin-top:12px">
       <label>提醒气泡停留时长（秒）</label>
       <input type="number" id="bubble-sec" min="5" max="120">
@@ -298,7 +302,7 @@ function bindToggle(el, get, set) {
   render();
 }
 
-let balanceOn = true, sedOn = true, notifyOn = true, schOn = true;
+let balanceOn = true, sedOn = true, notifyOn = true, schOn = true, autoStartOn = false;
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -322,11 +326,13 @@ async function load() {
   sedOn = !!cfg.sedentary.enabled;
   notifyOn = !!cfg.systemNotification;
   schOn = cfg.scheduleEnabled !== false;
+  autoStartOn = !!cfg.autoStart;
 
   bindToggle($('tg-balance'), () => balanceOn, (v) => { balanceOn = v; });
   bindToggle($('tg-sed'), () => sedOn, (v) => { sedOn = v; });
   bindToggle($('tg-notify'), () => notifyOn, (v) => { notifyOn = v; });
   bindToggle($('tg-sch'), () => schOn, (v) => { schOn = v; });
+  bindToggle($('tg-autostart'), () => autoStartOn, (v) => { autoStartOn = v; });
 
   $('sed-interval').value = cfg.sedentary.intervalMin;
   $('sed-away').value = cfg.sedentary.awayResetMin;
@@ -429,6 +435,7 @@ function collect() {
   cfg.sedentary.enabled = sedOn;
   cfg.systemNotification = notifyOn;
   cfg.scheduleEnabled = schOn;
+  cfg.autoStart = autoStartOn;
   cfg.sedentary.intervalMin = Number($('sed-interval').value) || 45;
   cfg.sedentary.awayResetMin = Number($('sed-away').value) || 5;
   cfg.sedentary.snoozeMin = Number($('sed-snooze').value) || 0;

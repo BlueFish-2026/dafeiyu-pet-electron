@@ -9,4 +9,4 @@
  *   次 = 加功能
  *   补 = 修 bug
  */
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
