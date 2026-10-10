@@ -23,6 +23,19 @@ const REPO = 'BlueFish-2026/dafeiyu-pet-electron';
 const BRANCH = 'main';
 const RAW = `https://raw.githubusercontent.com/${REPO}/${BRANCH}/`;
 
+// —— 网络栈选择（大肥鱼独立版注入）——
+// 优先走 Electron 的 Chromium 网络栈（net.fetch）：
+//   ① 信任「Windows 系统证书库」——用户开着 Watt Toolkit/Steam++ 这类 hosts 反代加速器时，
+//      它的自签根证书只装在系统库里，Node 内置 fetch（自带 OpenSSL CA）不认 → fetch failed；
+//   ② 自动跟随系统代理——浏览器能上 GitHub 的机器，宠物也能。
+// 普通 Node 环境（探针测试）拿不到 electron 模块 → 回落内置 fetch。
+let electronNet = null;
+try {
+  electronNet = (await import('electron')).net;
+} catch {
+  /* 普通 Node 环境，走内置 fetch */
+}
+
 export function currentVersion() {
   return APP_VERSION;
 }
@@ -53,15 +66,37 @@ function safeRel(rel) {
   return n;
 }
 
+/** Electron net.fetch 与 Node fetch 的参数差异：net.fetch 不吃 cache 选项（防缓存靠 ts= 时间戳已够） */
+async function rawFetch(url, opts = {}) {
+  if (electronNet?.fetch) {
+    return electronNet.fetch(url, {
+      method: 'GET',
+      headers: opts.headers,
+      signal: opts.signal,
+      bypassCustomProtocolHandlers: true,
+    });
+  }
+  return fetch(url, opts);
+}
+
 async function fetchText(rel) {
   const url = RAW + rel + (rel.includes('?') ? '&' : '?') + 'ts=' + Date.now();
-  const res = await fetch(url, {
+  const opts = {
     cache: 'no-store',
     signal: AbortSignal.timeout(20000),
     headers: { 'cache-control': 'no-cache' },
-  });
-  if (!res.ok) throw new Error(`${rel} → HTTP ${res.status}`);
-  return res.text();
+  };
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await rawFetch(url, opts);
+      if (!res.ok) throw new Error(`${rel} → HTTP ${res.status}`);
+      return res.text();
+    } catch (e) {
+      lastErr = e; // 网络抖动重试一次；第二次仍失败才抛出
+    }
+  }
+  throw lastErr;
 }
 
 /**
