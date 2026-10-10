@@ -2,59 +2,6 @@ MIT License
 
 Copyright (c) 2026 BlueFish-2026
 
-【许可范围说明 / Scope of this License】
-
-This MIT License applies to the CODE of this project ONLY
-(including but not limited to the `host/` and `web/` directories and the
-injection patches), authored by BlueFish-2026.
-
-本 MIT 协议仅适用于本项目的**代码**部分（包括但不限于 `host/`、`web/` 目录
-及注入补丁），作者 BlueFish-2026。
-
-The following parts are NOT covered by this MIT License and are subject to
-their own upstream terms (see below):
-
-以下内容**不在本 MIT 协议覆盖范围内**，适用其各自的上游条款（见下）：
-
-- Animation assets and the renderer process (`assets/`, `pet/`) are taken from
-  the open-source project dsh-pet (https://github.com/PC2005-cloud/dsh-pet).
-  Upstream terms for that material are: "free to use in open-source projects,
-  COMMERCIAL USE PROHIBITED" (允许开源使用，禁止商用).
-  → These assets may NOT be used for any commercial purpose.
-  → Attribution required: any introduction, display, or distribution of this
-    work MUST include the upstream repository URL
-    https://github.com/PC2005-cloud/dsh-pet
-
-- 「鲸鱼娘·大肥鱼」is a community-derived (二创) character based on DeepSeek's
-  whale mascot. "DeepSeek" and its whale logo are trademarks of DeepSeek; this
-  project grants no trademark or brand license and is not affiliated with or
-  endorsed by DeepSeek.
-
-【商用提示 / Commercial Use】
-- **代码部分（MIT）**：依 MIT 协议，代码本身在许可上不限制商用。
-- **素材部分**：来自上游、**明确禁止商用**。
-- **项目整体定位**：一个**非官方、非商业**的免费开源项目。
-- 如果你的目的是商业使用：**必须先把 `assets/` 与 `pet/` 下的上游动画素材
-  全部替换为你自己的素材**（或另行取得上游作者授权）。在替换之前，
-  整个项目**不可用于任何商业用途**。
-
-【使用条款与责任归属 / Terms of Use & Liability】
-
-本项目（含代码与素材）**以免费、非商业项目的形式发布**。
-欢迎免费使用、学习、修改、无偿分享；
-**本项目不希望、也不授权任何形式的商业使用**
-（包括但不限于出售、付费下载、打赏解锁、捆绑销售、
-内置到商业产品或服务中）。
-
-任何个人或组织若将本项目（或其任何部分，尤其是上游素材）
-用于商业目的：
-- 即构成对上游素材许可（**禁止商用**）及本条款的**违反**；
-- 由此产生的**一切法律责任与经济后果，由该使用者自行承担**；
-- **与本项目作者（BlueFish-2026）无关**，本项目作者不承担任何连带责任。
-
-分享或分发本项目时，**必须完整保留本 LICENSE 与 README 中的授权声明**，
-不得删除、修改或隐瞒其中的非商业限制条款。
-
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
