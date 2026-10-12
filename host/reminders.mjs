@@ -80,6 +80,8 @@ export class ReminderEngine {
    * @param {() => object} opts.getConfig   返回最新用户配置（热改配置无需重启引擎）
    * @param {() => number} opts.getIdleSeconds 系统空闲秒数（无人操作时长）
    * @param {(kind: string, text: string) => void} opts.onFire 触发回调
+   * @param {(reason: string) => void} [opts.onSeatReset] 连续就座计时**自动归零**回调
+   *        （目前只有一种：离开电脑超过 awayResetMin）——宿主据此收起顶着的久坐提醒气泡
    * @param {(msg: string) => void} [opts.log]
    * @param {object} [opts.holiday] 节假日日历（HolidayCalendar 实例，可选——缺省则 workday 规则降级为纯星期）
    */
@@ -87,6 +89,8 @@ export class ReminderEngine {
     this.getConfig = opts.getConfig;
     this.getIdleSeconds = opts.getIdleSeconds;
     this.onFire = opts.onFire;
+    /** 就座计时自动归零回调（见 tickSedentary 的「离开电脑」分支） */
+    this.onSeatReset = opts.onSeatReset ?? (() => {});
     this.log = opts.log ?? (() => {});
     this.holiday = opts.holiday ?? null;
 
@@ -210,8 +214,18 @@ export class ReminderEngine {
     }
 
     if (idle >= awaySec) {
-      // 判定为已离开：清空本次就座计时，回来后从零开始
-      if (this.seatStart !== null) this.log('检测到离开电脑，久坐计时归零');
+      // 判定为已离开：清空本次就座计时，回来后从零开始。
+      // ⚠️ 「在座 → 离开」的**那一刻**要回调宿主收气泡：计时器都归零了，久坐提醒的气泡
+      //    再顶着就是反直觉的（用户已起来了，气泡还挂在那儿只能手动单独收）。
+      //    只在 seatStart 由非 null 变 null 时回调一次，避免后续每个 tick 重复触发。
+      if (this.seatStart !== null) {
+        this.log('检测到离开电脑，久坐计时归零');
+        try {
+          this.onSeatReset('away');
+        } catch (e) {
+          this.log('就座归零回调异常：' + (e && e.message));
+        }
+      }
       this.seatStart = null;
       return;
     }

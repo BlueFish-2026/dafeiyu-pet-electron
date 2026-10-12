@@ -757,6 +757,10 @@ function initReminders() {
     getConfig: () => userCfg,
     getIdleSeconds: () => powerMonitor.getSystemIdleTime(),
     onFire: (kind, text) => fireReminder(kind, text),
+    // 连续就座计时**自动归零**（离开电脑超过 awayResetMin）时，同步收掉顶着的久坐气泡。
+    // 与「手动重置久坐计时」（路由 /api/seat-reset）同一套 dismissReminderKind 语义：
+    // ⚠️ 只收 sedentary，绝不误伤当时可能顶着的那条定时提醒。
+    onSeatReset: () => dismissReminderKind('sedentary', '离开电脑自动归零'),
     log: (m) => log('[提醒] ' + m),
     holiday,
   });
