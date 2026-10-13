@@ -1,5 +1,6 @@
 {
-  "version": "1.2.0",
+  "version": "1.2.1",
+  "notes": "修复：离开电脑导致久坐计时自动归零时，不再遗留提醒气泡（现在会自动收起）。",
   "files": [
     "CHANGELOG.md",
     "README.md",
