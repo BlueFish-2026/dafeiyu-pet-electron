@@ -388,7 +388,8 @@ function sendAudio(req, res, file) {
  */
 const PLAYLIST_FILE = join(ROOT, 'config', 'playlists.json');
 const PLAY_MODES = new Set(['sequential', 'repeat-one', 'shuffle']);
-let playlists = { version: 1, active: '', lists: [] };
+// lastScanDir：上次扫描用过的文件夹，下次弹对话框直接从这里打开（省得每次从头翻）
+let playlists = { version: 1, active: '', lists: [], lastScanDir: '' };
 
 function sanitizeList(l) {
   if (!l || !l.id) return null;
@@ -407,7 +408,12 @@ function loadPlaylists() {
     if (!existsSync(PLAYLIST_FILE)) return playlists;
     const raw = JSON.parse(readFileSync(PLAYLIST_FILE, 'utf8'));
     const lists = (Array.isArray(raw?.lists) ? raw.lists : []).map(sanitizeList).filter(Boolean);
-    playlists = { version: 1, active: String(raw?.active || ''), lists };
+    playlists = {
+      version: 1,
+      active: String(raw?.active || ''),
+      lists,
+      lastScanDir: String(raw?.lastScanDir || ''),
+    };
   } catch (e) {
     log('歌单文件读取失败（改用空歌单）：' + (e && e.message));
     playlists = { version: 1, active: '', lists: [] };
@@ -852,7 +858,12 @@ async function handleApi(path, req, res, url) {
     }
     const lists = (Array.isArray(incoming?.lists) ? incoming.lists : []).map(sanitizeList).filter(Boolean);
     if (lists.length > 50) return sendJson(res, 400, { ok: false, error: '歌单最多 50 个' });
-    playlists = { version: 1, active: String(incoming?.active || ''), lists };
+    playlists = {
+      version: 1,
+      active: String(incoming?.active || ''),
+      lists,
+      lastScanDir: playlists.lastScanDir, // 保存歌单时别把「上次扫描目录」顺手清了
+    };
     if (!activeList() && lists.length) playlists.active = lists[0].id;
     savePlaylists();
     log(`歌单已保存：${lists.length} 个，当前「${(activeList() || {}).name || '无'}」`);
@@ -889,12 +900,29 @@ async function handleApi(path, req, res, url) {
 
   // 选一个文件夹并扫描（设置页「扫描文件夹」按钮）—— 弹系统对话框，只能在主进程做
   if (action === 'music/scan-dir' && req.method === 'POST') {
-    const r = await dialog.showOpenDialog({ properties: ['openDirectory'], title: '选择音乐文件夹' });
+    const r = await dialog.showOpenDialog({
+      properties: ['openDirectory'],
+      title: '选择音乐文件夹',
+      // 记住上次的目录：下次直接从这儿打开，不用每次从「此电脑」翻起
+      defaultPath: playlists.lastScanDir || undefined,
+    });
     if (r.canceled || !r.filePaths || !r.filePaths[0]) return sendJson(res, 200, { ok: false, canceled: true });
     const dir = r.filePaths[0];
+    if (dir !== playlists.lastScanDir) {
+      playlists.lastScanDir = dir;
+      savePlaylists();
+    }
     const files = scanAudioDir(dir);
-    log(`扫描音乐文件夹：${dir}（${files.length} 首）`);
-    return sendJson(res, 200, { ok: true, dir, files: files.map((f) => ({ path: f.path, name: f.name, lrc: f.lrc })) });
+    // 标出「已经在当前歌单里」的：设置页默认不勾，避免反复把同一批歌再加一遍
+    const cur = activeList();
+    const have = new Set(cur ? cur.tracks.map((t) => t.path) : []);
+    const already = files.filter((f) => have.has(f.path)).length;
+    log(`扫描音乐文件夹：${dir}（${files.length} 首，其中 ${already} 首已在歌单）`);
+    return sendJson(res, 200, {
+      ok: true,
+      dir,
+      files: files.map((f) => ({ path: f.path, name: f.name, lrc: f.lrc, inList: have.has(f.path) })),
+    });
   }
 
   // 收起当前常驻提醒（双击宠物 / 右键菜单「收起提醒」调它）

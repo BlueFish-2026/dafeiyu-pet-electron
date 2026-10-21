@@ -763,7 +763,12 @@ function plRenderScan() {
 
   const head = document.createElement('div');
   head.className = 'hint-mini';
-  head.textContent = plScan.dir + ' · ' + plScan.files.length + ' 首，勾选要加入的：';
+  const inListCount = plScan.files.filter((f) => f.inList).length;
+  head.textContent =
+    plScan.dir +
+    ' · ' + plScan.files.length + ' 首' +
+    (inListCount ? '（其中 ' + inListCount + ' 首已在歌单，默认不勾）' : '') +
+    ' · 下次扫描直接从这里打开';
   box.appendChild(head);
 
   const list = document.createElement('div');
@@ -773,11 +778,13 @@ function plRenderScan() {
     lab.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = true;
+    // 已经在当前歌单里的默认不勾（省得反复加同一批），想加还是能手动勾回来
+    cb.checked = !f.inList;
     cb.dataset.i = String(i);
     const span = document.createElement('span');
-    span.textContent = f.name + (f.lrc ? '  ♪' : '');
+    span.textContent = f.name + (f.lrc ? '  ♪' : '') + (f.inList ? '  （已在歌单）' : '');
     span.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    if (f.inList) span.style.color = '#9ca3af';
     lab.appendChild(cb);
     lab.appendChild(span);
     list.appendChild(lab);
