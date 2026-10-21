@@ -123,11 +123,14 @@ class PetSprite {
     // ---- 音乐播放器（右键菜单「音乐」）----
     // 播放完全在渲染端做：<audio> 直接吃宿主 {PREFIX}/music/<i> 的 http 流。
     // 宿主只负责扫目录 + 吐文件（支持 Range），不维护播放状态 —— 重启就重来，符合"轻"的定位。
-    this.musicTracks = null; // 歌单缓存 [{i, name}]
-    this.musicDir = '';
+    this.musicTracks = null; // 当前歌单的曲目 [{i, name, lrc, missing}]
+    this.musicLists = []; // 所有歌单摘要 [{id, name, mode, count}]
+    this.musicList = null; // 当前激活歌单 {id, name, mode, tracks}
+    this.musicMode = 'sequential'; // sequential | repeat-one | shuffle
+    this.shuffleQueue = []; // 伪随机队列（洗牌一遍按序播完再重洗）
+    this.shufflePos = 0;
     this.musicIdx = 0;
     this.musicPlaying = false;
-    this.musicShuffle = false;
     this.musicEl = null; // 复用的 <audio>
     this.musicNameTimer = null; // 歌名气泡的收起定时器
     this.musicErrCount = 0; // 连续播放失败计数（防止坏文件把播放器卡进死循环）
@@ -1067,7 +1070,7 @@ class PetSprite {
 
   onContextMenu(e) {
     // 菜单里要显示「当前曲目」，首次打开时顺手拉一下歌单（异步，不阻塞菜单弹出；失败就算了）
-    if (this.pet.musicEnabled !== false && !this.musicTracks) void this.musicEnsureList(false);
+    if (this.pet.musicEnabled !== false && !this.musicTracks) void this.musicLoadActive();
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged || this.menuOpen) return;
     e.preventDefault();
@@ -1084,15 +1087,28 @@ class PetSprite {
     // 音乐：宠物只当遥控器（选歌/换歌在「音乐」文件夹里做，不做列表 UI）
     if (this.pet.musicEnabled !== false) {
       const tracks = this.musicTracks || [];
+      const lid = this.musicList ? this.musicList.id : '';
       // 上限来自配置（music.maxTracks，默认 30）：菜单是垂直列表，无限列会顶出屏幕
       const max = Math.max(1, Number(this.pet.musicMaxTracks) || this.musicMaxTracks || 30);
-      const shown = tracks.slice(0, max);
-      const pick = shown.map((t) => ({
+      const pick = tracks.slice(0, max).map((t) => ({
         label:
           (this.musicPlaying && t.i === this.musicIdx ? '▶ ' : '   ') +
           this.musicClip(t.name, 18) +
           (t.lrc ? ' ♪' : ''),
         action: 'music-pick-' + t.i,
+      }));
+      const modeItems = [
+        ['sequential', '顺序播放'],
+        ['repeat-one', '单曲循环'],
+        ['shuffle', '随机播放'],
+      ].map((pair) => ({
+        label: (this.musicMode === pair[0] ? '● ' : '○ ') + pair[1],
+        action: 'music-mode-' + pair[0],
+      }));
+      const allLists = this.musicLists || [];
+      const listItems = allLists.slice(0, 10).map((l) => ({
+        label: (l.id === lid ? '● ' : '○ ') + this.musicClip(l.name, 12) + '（' + l.count + ' 首）',
+        action: 'music-list-' + l.id,
       }));
       tools.push({
         label: '音乐' + (this.musicPlaying ? '（播放中）' : ''),
@@ -1100,13 +1116,18 @@ class PetSprite {
           { label: this.musicPlaying ? '⏸ 暂停' : '▶ 播放', action: 'music-toggle' },
           { label: '⏭ 下一首', action: 'music-next' },
           { label: '⏮ 上一首', action: 'music-prev' },
-          { label: (this.musicShuffle ? '● ' : '○ ') + '随机播放', action: 'music-shuffle' },
+          { label: '—— 歌单 ——', action: 'noop' },
+          ...(listItems.length ? listItems : [{ label: '（没有歌单）', action: 'noop' }]),
+          ...(allLists.length > 10 ? [{ label: '更多歌单请到设置页', action: 'noop' }] : []),
+          { label: '—— 播放模式 ——', action: 'noop' },
+          ...modeItems,
           { label: '—— 选择曲目（' + tracks.length + ' 首）——', action: 'noop' },
           ...(pick.length ? pick : [{ label: '（歌单是空的）', action: 'noop' }]),
           ...(tracks.length > max
             ? [{ label: '还有 ' + (tracks.length - max) + ' 首未列出', action: 'noop' }]
             : []),
-          { label: '重新扫描歌单', action: 'music-reload' },
+          { label: '管理歌单（设置页）', action: 'open-admin' },
+          { label: '重新加载歌单', action: 'music-reload' },
         ],
       });
     }
@@ -1275,16 +1296,16 @@ class PetSprite {
     if (leaf.action && leaf.action.indexOf('music-') === 0) {
       const a = leaf.action;
       if (a === 'music-toggle') void this.musicToggle();
-      else if (a === 'music-next') void this.musicSkip(1);
-      else if (a === 'music-prev') void this.musicSkip(-1);
-      else if (a === 'music-shuffle') {
-        this.musicShuffle = !this.musicShuffle;
-        this.showMusicBubble(this.musicShuffle ? '随机播放' : '顺序播放', 1800);
-      } else if (a === 'music-reload') {
-        this.musicTracks = null;
-        void this.musicEnsureList(true).then(() => {
-          this.showMusicBubble('已扫描到 ' + (this.musicTracks || []).length + ' 首');
+      else if (a === 'music-next') void this.musicNext();
+      else if (a === 'music-prev') void this.musicPrev();
+      else if (a === 'music-reload') {
+        void this.musicLoadActive().then(() => {
+          this.showMusicBubble('歌单已刷新：' + (this.musicTracks || []).length + ' 首', 2200);
         });
+      } else if (a.indexOf('music-mode-') === 0) {
+        this.musicSetMode(a.slice('music-mode-'.length));
+      } else if (a.indexOf('music-list-') === 0) {
+        void this.musicSwitchList(a.slice('music-list-'.length));
       } else if (a.indexOf('music-pick-') === 0) {
         // 直接点某首：不用先暂停再数着切
         const i = Number(a.slice('music-pick-'.length));
@@ -1489,25 +1510,36 @@ class PetSprite {
     this.position();
   }
 
-  // ---------------------------------------------------------------- 音乐播放器
+  // ---------------------------------------------------------------- 音乐播放器（歌单驱动）
 
-  /** 当前曲名（菜单/气泡用）；歌单还没拉到就返回空 */
+  /** 当前曲名（菜单/气泡用） */
   musicLabel() {
     const t = this.musicTracks && this.musicTracks[this.musicIdx];
     return t ? t.name : '';
   }
 
-  /** 拉歌单（宿主扫「音乐」文件夹）。force=true 时让宿主跳过 5s 缓存重新扫。 */
-  async musicEnsureList(force) {
-    if (this.musicTracks && !force) return this.musicTracks;
+  /** 拉当前激活歌单 + 所有歌单摘要（菜单切换歌单用） */
+  async musicLoadActive() {
     try {
-      const r = await fetch(BASE + '/music/list' + (force ? '?reload=1' : ''), { cache: 'no-store' });
+      const r = await fetch(BASE + '/music/active', { cache: 'no-store' });
       const d = await r.json();
-      this.musicTracks = Array.isArray(d && d.tracks) ? d.tracks : [];
-      this.musicDir = (d && d.dir) || '';
+      this.musicLists = Array.isArray(d && d.lists) ? d.lists : [];
+      this.musicList = (d && d.list) || null;
       this.musicMaxTracks = Number(d && d.maxTracks) || 30;
+      if (this.musicList) {
+        this.musicTracks = this.musicList.tracks || [];
+        this.musicMode = this.musicList.mode || 'sequential';
+      } else {
+        this.musicTracks = [];
+      }
+      // 换了歌单，洗牌队列作废
+      this.shuffleQueue = [];
+      this.shufflePos = 0;
+      if (this.musicIdx >= this.musicTracks.length) this.musicIdx = 0;
     } catch (err) {
+      this.musicLists = [];
       this.musicTracks = [];
+      this.musicList = null;
     }
     return this.musicTracks;
   }
@@ -1518,12 +1550,14 @@ class PetSprite {
     const a = new Audio();
     a.volume = 0.8;
     a.preload = 'auto';
-    a.addEventListener('ended', () => void this.musicSkip(1));
-    // 歌词跟唱：浏览器约每 250ms 触发一次，足够跟住一行（LRC 精度本来就只到 0.01s）
+    a.addEventListener('ended', () => {
+      // repeat-one 由 a.loop 自己循环，正常不会触发 ended；这里再挡一次
+      if (this.musicMode === 'repeat-one') return;
+      void this.musicNext();
+    });
     a.addEventListener('timeupdate', () => this.musicTickLyric());
     a.addEventListener('error', () => {
-      // 坏文件（比如文件头是乱码的 flac）不该让播放器卡死：跳过下一首。
-      // 但连续失败要刹车，否则整列表都是坏的时候会无限跳。
+      // 坏文件不该让播放器卡死：跳过。但连续失败要刹车，否则整单都坏会无限跳
       this.musicErrCount = (this.musicErrCount || 0) + 1;
       if (this.musicErrCount > 3) {
         this.musicPlaying = false;
@@ -1531,16 +1565,15 @@ class PetSprite {
         this.showMusicBubble('连续播放失败，已停止');
         return;
       }
-      void this.musicSkip(1, '跳过坏文件');
+      void this.musicNext('跳过坏文件');
     });
     this.musicEl = a;
     return a;
   }
 
   /**
-   * 顶部气泡显示一行字（歌名/状态）。
-   * 复用碎碎念气泡通道：独立版已把 whisperEnabled 恒关，轮询不会来抢，
-   * 而 renderBubble 里 whisper 的优先级正好低于提醒（提醒来了仍以提醒为准）。
+   * 顶部气泡显示一行字。复用碎碎念通道：独立版已把 whisper 轮询恒关，
+   * 而 renderBubble 里它的优先级低于提醒 —— 提醒来了仍以提醒为准。
    */
   showMusicBubble(text, ms = 3500) {
     if (this.musicNameTimer) clearTimeout(this.musicNameTimer);
@@ -1554,7 +1587,7 @@ class PetSprite {
     }, ms);
   }
 
-  /** 把 LRC 原文解析成 [{t: 秒, text}]。只认行首时间戳；空行（间奏）跳过。 */
+  /** 把 LRC 原文解析成 [{t: 秒, text}]。只认行首时间戳；空行（间奏）跳过 */
   parseLrc(raw) {
     const out = [];
     const text = String(raw || '').replace(/^\uFEFF/, '');
@@ -1570,9 +1603,9 @@ class PetSprite {
     return out;
   }
 
-  /** 拉某首歌的歌词（同目录同名 .lrc）。没有就清空 —— 不影响出声。 */
+  /** 拉当前这首的歌词（同目录同名 .lrc）。没有就清空，不影响出声 */
   async musicLoadLyric(idx) {
-    // 防竞态：快速连切时，早发的请求可能晚回来，用它判断结果是否已作废
+    // 防竞态：快速连切时早发的请求可能晚回来，用 seq 判断结果是否作废
     this.musicLyricSeq = (this.musicLyricSeq || 0) + 1;
     const seq = this.musicLyricSeq;
     this.musicLyric = [];
@@ -1582,14 +1615,17 @@ class PetSprite {
     const t = this.musicTracks && this.musicTracks[idx];
     if (!t || !t.lrc) return;
     if (this.pet && this.pet.musicLyrics === false) return;
+    const lid = this.musicList ? this.musicList.id : '';
     try {
-      const r = await fetch(BASE + '/music/lyric/' + idx, { cache: 'no-store' });
+      const r = await fetch(BASE + '/music/lyric/' + idx + (lid ? '?list=' + encodeURIComponent(lid) : ''), {
+        cache: 'no-store',
+      });
       if (!r.ok) return;
       const arr = this.parseLrc(await r.text());
       if (seq !== this.musicLyricSeq) return;
       this.musicLyric = arr;
     } catch (err) {
-      /* 拉不到就安静播，不弹错误 */
+      /* 拉不到就安静播 */
     }
   }
 
@@ -1631,20 +1667,39 @@ class PetSprite {
     return t.length > n ? t.slice(0, n - 1) + '…' : t;
   }
 
+  /**
+   * 伪随机：整张歌单洗牌一遍，按序播完再重洗。
+   * 为什么不每次 Math.random 抽一首：真随机会出现「同一首连着播好几次」「有些歌总也轮不到」。
+   */
+  buildShuffle() {
+    const n = this.musicTracks.length;
+    const arr = Array.from({ length: n }, (_, i) => i);
+    for (let i = n - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = arr[i];
+      arr[i] = arr[j];
+      arr[j] = tmp;
+    }
+    this.shuffleQueue = arr;
+    this.shufflePos = 0;
+  }
+
   /** 播第 idx 首（可越界，自动取模）；note 是气泡前缀（如「跳过坏文件」） */
   async musicPlay(idx, note) {
-    const tracks = await this.musicEnsureList(false);
+    const tracks = this.musicTracks || [];
     if (!tracks.length) {
       this.musicPlaying = false;
       this.musicAnimStop();
-      this.showMusicBubble('「音乐」文件夹里没有可播的歌');
+      this.showMusicBubble('当前歌单是空的');
       return;
     }
     const n = tracks.length;
     this.musicIdx = ((idx % n) + n) % n;
     const t = tracks[this.musicIdx];
     const a = this.musicAudio();
-    a.src = BASE + '/music/' + t.i;
+    a.loop = this.musicMode === 'repeat-one';
+    const lid = this.musicList ? this.musicList.id : '';
+    a.src = BASE + '/music/track/' + t.i + (lid ? '?list=' + encodeURIComponent(lid) : '');
     void this.musicLoadLyric(this.musicIdx); // 并发拉歌词，不阻塞出声
     try {
       await a.play();
@@ -1659,6 +1714,7 @@ class PetSprite {
   }
 
   async musicToggle() {
+    await this.musicLoadActive(); // 每次操作前刷新，保证设置页刚加的歌能拿到
     const a = this.musicAudio();
     if (this.musicPlaying) {
       a.pause();
@@ -1668,7 +1724,9 @@ class PetSprite {
       return;
     }
     if (!a.src) {
-      await this.musicPlay(this.musicIdx);
+      if (this.musicMode === 'shuffle') this.buildShuffle();
+      const first = this.musicMode === 'shuffle' && this.shuffleQueue.length ? this.shuffleQueue[0] : this.musicIdx;
+      await this.musicPlay(first);
       return;
     }
     try {
@@ -1678,24 +1736,78 @@ class PetSprite {
       this.showMusicBubble('♪ ' + (this.musicLabel() || ''));
     } catch (err) {
       // 源失效（文件被删/改名）：重拉歌单再放一次
-      this.musicTracks = null;
+      await this.musicLoadActive();
       await this.musicPlay(this.musicIdx);
     }
   }
 
-  /** step=1 下一首，-1 上一首；随机模式下忽略 step */
-  async musicSkip(step, note) {
-    const tracks = await this.musicEnsureList(false);
-    if (!tracks.length) return;
-    let next;
-    if (this.musicShuffle && tracks.length > 1 && step > 0) {
-      do {
-        next = Math.floor(Math.random() * tracks.length);
-      } while (next === this.musicIdx);
-    } else {
-      next = this.musicIdx + step;
+  /** 下一首（按当前模式走） */
+  async musicNext(note) {
+    if (!this.musicTracks.length) return;
+    if (this.musicMode === 'shuffle') {
+      if (!this.shuffleQueue.length || this.shufflePos >= this.shuffleQueue.length - 1) {
+        const prev = this.musicIdx;
+        this.buildShuffle();
+        // 新一轮第一首别跟刚播的撞（只有一首时无解）
+        if (this.shuffleQueue.length > 1 && this.shuffleQueue[0] === prev) {
+          const tmp = this.shuffleQueue[0];
+          this.shuffleQueue[0] = this.shuffleQueue[1];
+          this.shuffleQueue[1] = tmp;
+        }
+        this.shufflePos = 0;
+        return this.musicPlay(this.shuffleQueue[0], note);
+      }
+      this.shufflePos++;
+      return this.musicPlay(this.shuffleQueue[this.shufflePos], note);
     }
-    await this.musicPlay(next, note);
+    const n = this.musicTracks.length;
+    return this.musicPlay((this.musicIdx + 1) % n, note);
+  }
+
+  /** 上一首（随机模式没有历史栈，退化成下一首） */
+  async musicPrev(note) {
+    if (!this.musicTracks.length) return;
+    if (this.musicMode === 'shuffle') return this.musicNext(note);
+    const n = this.musicTracks.length;
+    return this.musicPlay((((this.musicIdx - 1) % n) + n) % n, note);
+  }
+
+  /** 切歌单：落盘 + 重新拉取（当前播放会停） */
+  async musicSwitchList(id) {
+    try {
+      if (this.musicEl) this.musicEl.pause();
+      this.musicPlaying = false;
+      // ⚠️ 必须带 ORIGIN：渲染页是 file://，相对路径 '/api/...' 会指到文件系统上去
+      await fetch(ORIGIN + '/api/music/active?id=' + encodeURIComponent(id), { method: 'POST', cache: 'no-store' });
+      this.musicIdx = 0;
+      await this.musicLoadActive();
+      this.showMusicBubble('歌单：' + (this.musicList ? this.musicList.name : '无'), 2500);
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  /** 切播放模式，并写回歌单（下次启动记住） */
+  musicSetMode(mode) {
+    const OK = ['sequential', 'repeat-one', 'shuffle'];
+    if (OK.indexOf(mode) < 0) return;
+    this.musicMode = mode;
+    if (this.musicEl) this.musicEl.loop = mode === 'repeat-one';
+    this.shuffleQueue = [];
+    this.shufflePos = 0;
+    const NAME = { sequential: '顺序播放', 'repeat-one': '单曲循环', shuffle: '随机播放' };
+    this.showMusicBubble(NAME[mode] || mode, 1800);
+    // 写回歌单（失败只影响下次启动的默认值，不影响当前播放）
+    if (this.musicList) {
+      try {
+        fetch(ORIGIN + '/api/music/mode?id=' + encodeURIComponent(this.musicList.id) + '&mode=' + mode, {
+          method: 'POST',
+          cache: 'no-store',
+        }).catch(() => {});
+      } catch (err) {
+        /* ignore */
+      }
+    }
   }
 
   /**

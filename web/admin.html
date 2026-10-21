@@ -255,6 +255,49 @@
   </div>
 
   <div class="card">
+    <h2><span class="ico">🎵</span>音乐与歌单</h2>
+    <p class="hint-mini">
+      歌单在宠物右键菜单「音乐」里播放。想加歌：扫描任意文件夹挑歌加入，或直接把文件丢进「音乐」文件夹。
+    </p>
+
+    <div class="field">
+      <label>当前歌单</label>
+      <div class="row">
+        <select id="pl-select" style="flex:1"></select>
+        <button class="ghost" id="btn-pl-new">新建</button>
+        <button class="ghost" id="btn-pl-rename">重命名</button>
+        <button class="ghost" id="btn-pl-del">删除</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>播放模式</label>
+      <div class="row">
+        <select id="pl-mode" style="flex:1">
+          <option value="sequential">顺序播放</option>
+          <option value="repeat-one">单曲循环</option>
+          <option value="shuffle">随机播放（洗牌播完再重洗）</option>
+        </select>
+        <button class="ghost" id="btn-pl-scan">📁 扫描文件夹加歌</button>
+      </div>
+    </div>
+
+    <div class="field" id="pl-scan-wrap" style="display:none">
+      <label>扫描结果</label>
+      <div id="pl-scan"></div>
+    </div>
+
+    <div class="field">
+      <label>曲目</label>
+      <div id="pl-tracks" class="reminder-wrap"></div>
+    </div>
+
+    <div class="actions">
+      <span class="hint-mini" id="pl-hint">改动自动保存</span>
+    </div>
+  </div>
+
+  <div class="card">
     <h2><span class="ico">⬆</span>软件更新</h2>
     <p class="hint">内置自动更新：宠物自己联网从 GitHub 只拉改动的小文件（几百 KB），不用重装整个程序。</p>
     <div class="row" style="margin-top:4px">
@@ -616,6 +659,227 @@ function showReloadHint(newVer) {
   document.body.appendChild(bar);
   bar.querySelector('#ui-reload-btn').onclick = () => location.replace('/admin?v=' + newVer);
 }
+
+// ---------------------------------------------------------------- 音乐与歌单
+
+let plState = { active: '', lists: [] };
+let plScan = { dir: '', files: [] };
+
+function plCurrent() {
+  return plState.lists.find((l) => l.id === plState.active) || plState.lists[0] || null;
+}
+
+async function plLoad() {
+  try {
+    const d = await api('/api/music/playlists');
+    plState = { active: d.active || '', lists: d.lists || [] };
+    plRender();
+  } catch (e) {
+    $('pl-hint').textContent = '读取失败：' + e.message;
+  }
+}
+
+function plRender() {
+  const sel = $('pl-select');
+  sel.innerHTML = '';
+  if (!plState.lists.length) {
+    const o = document.createElement('option');
+    o.textContent = '（还没有歌单）';
+    o.value = '';
+    sel.appendChild(o);
+  }
+  for (const l of plState.lists) {
+    const o = document.createElement('option');
+    o.value = l.id;
+    o.textContent = l.name + '（' + (l.tracks || []).length + ' 首）';
+    if (l.id === plState.active) o.selected = true;
+    sel.appendChild(o);
+  }
+  const cur = plCurrent();
+  $('pl-mode').value = cur ? cur.mode || 'sequential' : 'sequential';
+  $('pl-mode').disabled = !cur;
+  plRenderTracks();
+}
+
+function plRenderTracks() {
+  const box = $('pl-tracks');
+  box.innerHTML = '';
+  const l = plCurrent();
+  if (!l || !(l.tracks || []).length) {
+    const e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = '这个歌单还没有歌，点「扫描文件夹加歌」。';
+    box.appendChild(e);
+    return;
+  }
+  l.tracks.forEach((t, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f0f0f0';
+    const txt = document.createElement('div');
+    txt.style.cssText = 'flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    txt.textContent = i + 1 + '. ' + t.name;
+    const del = document.createElement('button');
+    del.className = 'icon-btn';
+    del.textContent = '×';
+    del.title = '从歌单移除（不删文件）';
+    del.onclick = () => {
+      l.tracks.splice(i, 1);
+      plRenderTracks();
+      void plSave();
+    };
+    row.appendChild(txt);
+    row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
+async function plSave() {
+  try {
+    const r = await api('/api/music/playlists', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ active: plState.active, lists: plState.lists }),
+    });
+    plState.active = r.active || plState.active;
+    $('pl-hint').textContent = '已保存 · ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    $('pl-hint').textContent = '保存失败：' + e.message;
+  }
+}
+
+function plRenderScan() {
+  const wrap = $('pl-scan-wrap');
+  const box = $('pl-scan');
+  box.innerHTML = '';
+  wrap.style.display = 'block';
+
+  if (!plScan.files.length) {
+    const e = document.createElement('div');
+    e.className = 'hint-mini';
+    e.textContent = '这个文件夹里没有可播放的音频（支持 mp3 / flac / m4a / wav / ogg / opus）。';
+    box.appendChild(e);
+    return;
+  }
+
+  const head = document.createElement('div');
+  head.className = 'hint-mini';
+  head.textContent = plScan.dir + ' · ' + plScan.files.length + ' 首，勾选要加入的：';
+  box.appendChild(head);
+
+  const list = document.createElement('div');
+  list.style.cssText = 'max-height:240px;overflow:auto;margin:8px 0;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px';
+  plScan.files.forEach((f, i) => {
+    const lab = document.createElement('label');
+    lab.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = true;
+    cb.dataset.i = String(i);
+    const span = document.createElement('span');
+    span.textContent = f.name + (f.lrc ? '  ♪' : '');
+    span.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    lab.appendChild(cb);
+    lab.appendChild(span);
+    list.appendChild(lab);
+  });
+  box.appendChild(list);
+
+  const btn = document.createElement('button');
+  btn.className = 'primary';
+  btn.textContent = '加入当前歌单';
+  btn.onclick = async () => {
+    const l = plCurrent();
+    if (!l) return;
+    const picked = Array.from(list.querySelectorAll('input[type=checkbox]:checked')).map((c) => plScan.files[Number(c.dataset.i)]);
+    if (!picked.length) {
+      $('pl-hint').textContent = '一首都没选';
+      return;
+    }
+    if (!l.tracks) l.tracks = [];
+    const have = new Set(l.tracks.map((t) => t.path));
+    let added = 0;
+    for (const f of picked) {
+      if (have.has(f.path)) continue;
+      l.tracks.push({ path: f.path, name: f.name });
+      have.add(f.path);
+      added++;
+    }
+    wrap.style.display = 'none';
+    plScan = { dir: '', files: [] };
+    plRender();
+    await plSave();
+    $('pl-hint').textContent = '加入 ' + added + ' 首（跳过重复 ' + (picked.length - added) + ' 首）';
+  };
+  box.appendChild(btn);
+}
+
+$('pl-select').onchange = async (e) => {
+  plState.active = e.target.value;
+  plRender();
+  await plSave();
+};
+
+$('pl-mode').onchange = async (e) => {
+  const l = plCurrent();
+  if (!l) return;
+  l.mode = e.target.value;
+  await plSave();
+};
+
+$('btn-pl-new').onclick = async () => {
+  const name = prompt('歌单名称', '新歌单');
+  if (name === null) return;
+  const id = 'pl_' + Date.now().toString(36) + Math.floor(Math.random() * 1000);
+  plState.lists.push({ id, name: String(name).trim().slice(0, 40) || '新歌单', mode: 'sequential', tracks: [] });
+  plState.active = id;
+  plRender();
+  await plSave();
+};
+
+$('btn-pl-rename').onclick = async () => {
+  const l = plCurrent();
+  if (!l) return;
+  const name = prompt('重命名歌单', l.name);
+  if (name === null) return;
+  l.name = String(name).trim().slice(0, 40) || l.name;
+  plRender();
+  await plSave();
+};
+
+$('btn-pl-del').onclick = async () => {
+  const l = plCurrent();
+  if (!l) return;
+  if (!confirm('删除歌单「' + l.name + '」？只删这个歌单，不会动音乐文件。')) return;
+  plState.lists = plState.lists.filter((x) => x.id !== l.id);
+  plState.active = plState.lists[0] ? plState.lists[0].id : '';
+  plRender();
+  await plSave();
+};
+
+$('btn-pl-scan').onclick = async () => {
+  if (!plCurrent()) {
+    const id = 'pl_' + Date.now().toString(36) + Math.floor(Math.random() * 1000);
+    plState.lists.push({ id, name: '我的歌单', mode: 'sequential', tracks: [] });
+    plState.active = id;
+    plRender();
+    await plSave();
+  }
+  $('pl-hint').textContent = '等待选择文件夹…';
+  try {
+    const r = await api('/api/music/scan-dir', { method: 'POST' });
+    if (r.canceled) {
+      $('pl-hint').textContent = '已取消';
+      return;
+    }
+    plScan = { dir: r.dir, files: r.files || [] };
+    plRenderScan();
+    $('pl-hint').textContent = '扫描到 ' + plScan.files.length + ' 首';
+  } catch (e) {
+    $('pl-hint').textContent = '扫描失败：' + e.message;
+  }
+};
+
+void plLoad();
 
 setInterval(checkUiVersion, 5000);
 

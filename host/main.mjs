@@ -26,6 +26,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   writeFileSync,
   appendFileSync,
   statSync,
@@ -373,6 +374,116 @@ function sendAudio(req, res, file) {
   return createReadStream(file).pipe(res);
 }
 
+// ---------------------------------------------------------------- 歌单
+
+/**
+ * 歌单库（config/playlists.json）。
+ * 存绝对路径 —— 用户可能从多个文件夹选歌，相对路径表达不了。
+ * 文件被删/移走时用 existsSync 标 missing，播放时跳过而不是崩。
+ *
+ * 播放模式：
+ *   sequential  顺序循环（播完最后一首回到第一首）
+ *   repeat-one  单曲循环
+ *   shuffle     伪随机：整张歌单洗牌一遍、按序播完再重洗，避免真随机反复撞同一首
+ */
+const PLAYLIST_FILE = join(ROOT, 'config', 'playlists.json');
+const PLAY_MODES = new Set(['sequential', 'repeat-one', 'shuffle']);
+let playlists = { version: 1, active: '', lists: [] };
+
+function sanitizeList(l) {
+  if (!l || !l.id) return null;
+  return {
+    id: String(l.id),
+    name: String(l.name || '未命名歌单').slice(0, 40),
+    mode: PLAY_MODES.has(l.mode) ? l.mode : 'sequential',
+    tracks: (Array.isArray(l.tracks) ? l.tracks : [])
+      .filter((t) => t && typeof t.path === 'string' && t.path)
+      .map((t) => ({ path: t.path, name: String(t.name || '').slice(0, 200) })),
+  };
+}
+
+function loadPlaylists() {
+  try {
+    if (!existsSync(PLAYLIST_FILE)) return playlists;
+    const raw = JSON.parse(readFileSync(PLAYLIST_FILE, 'utf8'));
+    const lists = (Array.isArray(raw?.lists) ? raw.lists : []).map(sanitizeList).filter(Boolean);
+    playlists = { version: 1, active: String(raw?.active || ''), lists };
+  } catch (e) {
+    log('歌单文件读取失败（改用空歌单）：' + (e && e.message));
+    playlists = { version: 1, active: '', lists: [] };
+  }
+  return playlists;
+}
+
+function savePlaylists() {
+  try {
+    mkdirSync(dirname(PLAYLIST_FILE), { recursive: true });
+    const tmp = PLAYLIST_FILE + '.tmp';
+    writeFileSync(tmp, JSON.stringify(playlists, null, 2), 'utf8');
+    renameSync(tmp, PLAYLIST_FILE);
+  } catch (e) {
+    log('歌单保存失败：' + (e && e.message));
+  }
+}
+
+/** 扫某个目录下的可播音频（递归；按曲名排序） */
+function scanAudioDir(dir) {
+  const out = [];
+  const walk = (d) => {
+    let items = [];
+    try {
+      items = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const it of items) {
+      if (it.name.startsWith('.')) continue;
+      const p = join(d, it.name);
+      if (it.isDirectory()) {
+        walk(p);
+        continue;
+      }
+      if (!MUSIC_EXTS.has(extname(it.name).toLowerCase())) continue;
+      out.push({
+        path: p,
+        name: it.name.replace(/\.[^.]+$/, ''),
+        lrc: existsSync(p.replace(/\.[^.]+$/, '.lrc')),
+      });
+    }
+  };
+  walk(dir);
+  out.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  return out;
+}
+
+function activeList() {
+  return playlists.lists.find((l) => l.id === playlists.active) || null;
+}
+
+/**
+ * 一个歌单都没有时，按「音乐」文件夹自动建一个默认歌单。
+ * 目的：升级后直接还能播，不用先去设置页手工建。
+ */
+function ensureDefaultPlaylist() {
+  if (playlists.lists.length > 0) {
+    if (!activeList()) playlists.active = playlists.lists[0].id;
+    return;
+  }
+  const files = scanAudioDir(resolveMusicDir());
+  if (!files.length) return;
+  playlists.lists = [
+    {
+      id: 'pl_default',
+      name: '默认歌单',
+      mode: 'sequential',
+      tracks: files.map((f) => ({ path: f.path, name: f.name })),
+    },
+  ];
+  playlists.active = 'pl_default';
+  savePlaylists();
+  log(`没有歌单，已按「音乐」文件夹生成默认歌单：${files.length} 首`);
+}
+
 // ---------------------------------------------------------------- 提醒 → 宠物
 
 /**
@@ -544,39 +655,49 @@ async function handleRoute(req, res) {
     );
   }
 
-  // ---------- 音乐播放器（列表 + 音频流） ----------
+  // ---------- 音乐播放器（歌单驱动） ----------
   // 走 PREFIX 而不是 /api/：渲染端的 <audio src> 要能直接把它当媒体地址用，
-  // CSP 的 media-src 允许 http，这条路天然通（提醒音就是这么走的）。
-  if (rest === 'music/list') {
-    const m = scanMusic(url.searchParams.get('reload') === '1');
+  // CSP 的 media-src 允许 http（提醒音也是这么走的）。
+  if (rest === 'music/active') {
+    const l = activeList();
     return sendJson(
       res,
       200,
       {
         ok: true,
-        dir: m.dir,
-        count: m.tracks.length,
-        // 菜单最多列几首（渲染端据此截断，避免菜单长到出屏）
+        active: playlists.active,
+        lists: playlists.lists.map((x) => ({ id: x.id, name: x.name, mode: x.mode, count: x.tracks.length })),
+        list: l
+          ? {
+              id: l.id,
+              name: l.name,
+              mode: l.mode,
+              tracks: l.tracks.map((t, i) => ({
+                i,
+                name: t.name,
+                lrc: existsSync(t.path.replace(/\.[^.]+$/, '.lrc')),
+                missing: !existsSync(t.path),
+              })),
+            }
+          : null,
         maxTracks: Math.max(1, Math.min(200, Number(userCfg.music?.maxTracks) || 30)),
-        // lrc=true 表示同目录有同名 .lrc，可以显示歌词
-        tracks: m.tracks.map((t, i) => ({ i, name: t.name, lrc: !!t.lrcRel })),
       },
       { 'cache-control': 'no-store' },
     );
   }
 
-  // 歌词（.lrc 原文，渲染端自己解析时间戳）。
-  // ⚠️ 必须排在 'music/<i>' 之前：否则 'music/lyric/0' 会先被那个分支吃掉（Number('lyric/0') = NaN → 404）
+  // 歌词（.lrc 原文，渲染端自己解析时间戳）
   if (rest.startsWith('music/lyric/')) {
     const idx = Number(rest.slice('music/lyric/'.length));
-    const m = scanMusic(false);
-    const t = Number.isInteger(idx) && idx >= 0 ? m.tracks[idx] : null;
-    if (!t || !t.lrcRel) return sendText(res, 404, 'dsh-pet: no lyric');
-    const file = resolve(join(m.dir, t.lrcRel));
-    if (!file.startsWith(resolve(m.dir) + sep)) return sendText(res, 403, 'dsh-pet: forbidden');
+    const l = playlists.lists.find((x) => x.id === (url.searchParams.get('list') || playlists.active));
+    const t = l && Number.isInteger(idx) && idx >= 0 ? l.tracks[idx] : null;
+    if (!t) return sendText(res, 404, 'dsh-pet: no lyric');
+    if (!MUSIC_EXTS.has(extname(t.path).toLowerCase())) return sendText(res, 403, 'dsh-pet: forbidden');
+    const lrc = t.path.replace(/\.[^.]+$/, '.lrc');
+    if (!existsSync(lrc)) return sendText(res, 404, 'dsh-pet: no lyric');
     let txt = '';
     try {
-      txt = readFileSync(file, 'utf8');
+      txt = readFileSync(lrc, 'utf8');
     } catch {
       return sendText(res, 404, 'dsh-pet: lyric vanished');
     }
@@ -584,15 +705,16 @@ async function handleRoute(req, res) {
     return res.end(txt);
   }
 
-  if (rest.startsWith('music/')) {
-    const idx = Number(rest.slice('music/'.length));
-    const m = scanMusic(false);
-    const t = Number.isInteger(idx) && idx >= 0 ? m.tracks[idx] : null;
+  // 音频流（歌单里的第 i 首；?list=<id> 指定歌单，缺省用当前激活的）
+  if (rest.startsWith('music/track/')) {
+    const idx = Number(rest.slice('music/track/'.length));
+    const l = playlists.lists.find((x) => x.id === (url.searchParams.get('list') || playlists.active));
+    const t = l && Number.isInteger(idx) && idx >= 0 ? l.tracks[idx] : null;
     if (!t) return sendText(res, 404, 'dsh-pet: no such track');
-    const file = resolve(join(m.dir, t.rel));
-    // 挡路径逃逸（rel 是我们自己扫出来的，但播放地址是外部可拼的，多校验一次不吃亏）
-    if (!file.startsWith(resolve(m.dir) + sep)) return sendText(res, 403, 'dsh-pet: forbidden');
-    return sendAudio(req, res, file);
+    // 只允许吐音频扩展名 —— 防止有人手改 playlists.json 让它读任意文件
+    if (!MUSIC_EXTS.has(extname(t.path).toLowerCase())) return sendText(res, 403, 'dsh-pet: forbidden');
+    if (!existsSync(t.path)) return sendText(res, 404, 'dsh-pet: file missing');
+    return sendAudio(req, res, t.path);
   }
 
   // ---------- 提醒提示音（CSP 只允许 http，故由宿主回吐系统 wav） ----------
@@ -711,6 +833,68 @@ async function handleApi(path, req, res, url) {
       // 当前是否有常驻提醒（管理页可据此显示"收起提醒"按钮）
       activeReminder,
     });
+  }
+
+  // ---------- 歌单（设置页「音乐」卡片） ----------
+  // 设置页要编辑曲目，所以这里返回**完整**歌单（含 tracks），不是摘要
+  if (action === 'music/playlists' && req.method === 'GET') {
+    return sendJson(res, 200, { ok: true, active: playlists.active, lists: playlists.lists });
+  }
+
+  // 整份覆盖式保存：设置页拿到全量 → 改完 → 提交，逻辑最简单，不用做增量 diff
+  if (action === 'music/playlists' && req.method === 'POST') {
+    const body = await readBody(req);
+    let incoming;
+    try {
+      incoming = JSON.parse(body);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' });
+    }
+    const lists = (Array.isArray(incoming?.lists) ? incoming.lists : []).map(sanitizeList).filter(Boolean);
+    if (lists.length > 50) return sendJson(res, 400, { ok: false, error: '歌单最多 50 个' });
+    playlists = { version: 1, active: String(incoming?.active || ''), lists };
+    if (!activeList() && lists.length) playlists.active = lists[0].id;
+    savePlaylists();
+    log(`歌单已保存：${lists.length} 个，当前「${(activeList() || {}).name || '无'}」`);
+    return sendJson(res, 200, {
+      ok: true,
+      active: playlists.active,
+      lists: playlists.lists.map((l) => ({ id: l.id, name: l.name, mode: l.mode, count: l.tracks.length })),
+    });
+  }
+
+  // 切换当前歌单（宠物右键菜单「歌单」里点一下就走这里，不用提交整份歌单库）
+  if (action === 'music/active' && req.method === 'POST') {
+    const id = String(url.searchParams.get('id') || '');
+    if (!playlists.lists.some((l) => l.id === id)) {
+      return sendJson(res, 400, { ok: false, error: '没有这个歌单' });
+    }
+    playlists.active = id;
+    savePlaylists();
+    log(`切换到歌单「${(activeList() || {}).name || id}」`);
+    return sendJson(res, 200, { ok: true, active: id });
+  }
+
+  // 切换某个歌单的播放模式（渲染端切模式时调，下次启动沿用）
+  if (action === 'music/mode' && req.method === 'POST') {
+    const id = String(url.searchParams.get('id') || '');
+    const mode = String(url.searchParams.get('mode') || '');
+    const l = playlists.lists.find((x) => x.id === id);
+    if (!l) return sendJson(res, 400, { ok: false, error: '没有这个歌单' });
+    if (!PLAY_MODES.has(mode)) return sendJson(res, 400, { ok: false, error: '非法模式' });
+    l.mode = mode;
+    savePlaylists();
+    return sendJson(res, 200, { ok: true, id, mode });
+  }
+
+  // 选一个文件夹并扫描（设置页「扫描文件夹」按钮）—— 弹系统对话框，只能在主进程做
+  if (action === 'music/scan-dir' && req.method === 'POST') {
+    const r = await dialog.showOpenDialog({ properties: ['openDirectory'], title: '选择音乐文件夹' });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return sendJson(res, 200, { ok: false, canceled: true });
+    const dir = r.filePaths[0];
+    const files = scanAudioDir(dir);
+    log(`扫描音乐文件夹：${dir}（${files.length} 首）`);
+    return sendJson(res, 200, { ok: true, dir, files: files.map((f) => ({ path: f.path, name: f.name, lrc: f.lrc })) });
   }
 
   // 收起当前常驻提醒（双击宠物 / 右键菜单「收起提醒」调它）
@@ -1432,6 +1616,9 @@ app.whenReady().then(async () => {
     'utf8',
   );
 
+  // 歌单必须在 startHelper 之前就位 —— 渲染进程一起来就会问 /music/active
+  loadPlaylists();
+  ensureDefaultPlaylist();
   initReminders();
   startHelper();
   startHelperWatchdog(); // 渲染进程看门狗：宠物静默假死时自动拉起（详见 checkHelperWatchdog）
