@@ -455,6 +455,8 @@ class PetSprite {
   // 动画链（与浏览器 pickNext 语义一致，纯逻辑在 shared）
   playIdle() {
     this.stopMove();
+    // 音乐播放中：不随机换动作（连带漫游也停），保持播放动画
+    if (this.resumeMusicAnim()) return;
     const { animations, animationWeights } = { animations: this.animations, animationWeights: this.weights };
     const roll = Math.random();
     const k = S.rollKind(roll, animationWeights);
@@ -511,6 +513,7 @@ class PetSprite {
       // 非 workStatus 事件动画（余额/碎碎念）播完：workStatus 仍非终态 → 立即恢复档位循环动画，
       // 不进随机链（长事件期间状态不变，随机链会一直播到状态切换才被拉回）
       if (this.resumeWorkStatusAnim()) return;
+      if (this.resumeMusicAnim()) return;
       if (animations.idle.length) this.playOnce(S.pick(animations.idle, this.anim));
       return;
     }
@@ -521,6 +524,7 @@ class PetSprite {
     if (animations.drag.includes(this.anim) || animations.clicks.includes(this.anim)) {
       // 互动动画播完：workStatus 非终态时恢复状态循环，否则回 idle（与浏览器同一语义）
       if (this.resumeWorkStatusAnim()) return;
+      if (this.resumeMusicAnim()) return;
       if (animations.idle.length) this.playOnce(S.pick(animations.idle, this.anim));
       return;
     }
@@ -1852,6 +1856,10 @@ class PetSprite {
       }
       if (name && this.musicAnimExists(name)) {
         this.musicAnimName = name;
+        // ⚠️ switchTo 不更新 this.anim（只有 playOnce 会），这里必须手工同步。
+        // 否则系统仍以为在播旧动画，任何一次「回 idle」都会用随机动作把画面顶掉。
+        this.anim = name;
+        this.once = false;
         this.switchTo(name, false);
       }
     } catch (err) {
@@ -1865,6 +1873,23 @@ class PetSprite {
     } catch (err) {
       /* ignore */
     }
+  }
+
+  /**
+   * 音乐播放中：拒绝随机动作、保持播放动画。返回 true 表示已接管。
+   *
+   * 为什么需要：宠物空闲时会自己走随机动作链（东张西望、偷吃零食、原地玩魔方…），
+   * 那些动画一播就把哼歌/跳舞顶掉了 —— 用户看到的就是「在放歌，宠物却在做无关动作」。
+   * 音乐期间把它按住，暂停/停止后 playIdle 自然恢复随机链。
+   */
+  resumeMusicAnim() {
+    if (!this.musicPlaying || !this.musicAnimName) return false;
+    // 已经在播音乐动画（且不是一次性）→ 不重复切，避免每次 tick 重载视频
+    if (this.anim === this.musicAnimName && this.once === false) return true;
+    this.anim = this.musicAnimName;
+    this.once = false;
+    this.switchTo(this.musicAnimName, false);
+    return true;
   }
 
   renderBubble() {
