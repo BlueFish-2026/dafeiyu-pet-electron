@@ -120,6 +120,18 @@ class PetSprite {
     this.chatClose = null;
     this.chatOpen = false;
 
+    // ---- 音乐播放器（右键菜单「音乐」）----
+    // 播放完全在渲染端做：<audio> 直接吃宿主 {PREFIX}/music/<i> 的 http 流。
+    // 宿主只负责扫目录 + 吐文件（支持 Range），不维护播放状态 —— 重启就重来，符合"轻"的定位。
+    this.musicTracks = null; // 歌单缓存 [{i, name}]
+    this.musicDir = '';
+    this.musicIdx = 0;
+    this.musicPlaying = false;
+    this.musicShuffle = false;
+    this.musicEl = null; // 复用的 <audio>
+    this.musicNameTimer = null; // 歌名气泡的收起定时器
+    this.musicErrCount = 0; // 连续播放失败计数（防止坏文件把播放器卡进死循环）
+
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
     this.el = document.createElement('div');
     this.el.className = 'pet-sprite';
@@ -1049,6 +1061,8 @@ class PetSprite {
   }
 
   onContextMenu(e) {
+    // 菜单里要显示「当前曲目」，首次打开时顺手拉一下歌单（异步，不阻塞菜单弹出；失败就算了）
+    if (this.pet.musicEnabled !== false && !this.musicTracks) void this.musicEnsureList(false);
     const d = this.dragState;
     if (d.active || d.dragging || this.justDragged || this.menuOpen) return;
     e.preventDefault();
@@ -1062,6 +1076,23 @@ class PetSprite {
     // ⚠️ 本块（⓪）不打 MARK：见 TARGETS 里第 4 参 False。
     if (this.workOn) tools.push({ label: '收起提醒', action: 'dismiss-reminder' });
     if (this.pet.balanceEnabled) tools.push({ label: '查看余额', action: 'show-balance' });
+    // 音乐：宠物只当遥控器（选歌/换歌在「音乐」文件夹里做，不做列表 UI）
+    if (this.pet.musicEnabled !== false) {
+      const cur = this.musicLabel();
+      tools.push({
+        label: '音乐' + (this.musicPlaying ? '（播放中）' : ''),
+        children: [
+          { label: this.musicPlaying ? '⏸ 暂停' : '▶ 播放', action: 'music-toggle' },
+          { label: '⏭ 下一首', action: 'music-next' },
+          { label: '⏮ 上一首', action: 'music-prev' },
+          { label: '—— 播放模式 ——', action: 'noop' },
+          { label: (this.musicShuffle ? '● ' : '○ ') + '随机播放', action: 'music-shuffle' },
+          { label: '—— 当前曲目 ——', action: 'noop' },
+          { label: cur || '（未开始）', action: 'noop' },
+          { label: '重新扫描歌单', action: 'music-reload' },
+        ],
+      });
+    }
     tools.push(
       // 独立版已摘掉「碎碎念」「对话」：二者都要 LLM，而独立版没有 ——
       // 宿主 /whisper 与 /chat 恒返回 {ok:false, reason:'unsupported'}（见 host/main.mjs）。
@@ -1223,6 +1254,23 @@ class PetSprite {
     }
     // 开关类：本地先翻转一次，让本次菜单立即显示新状态；真正的落盘由宿主完成。
     // （宿主是唯一权威，下次开菜单会拿到落盘后的值。）
+    // 音乐：全部在渲染端处理，不经过宿主（宿主只管扫目录 + 吐文件）
+    if (leaf.action && leaf.action.indexOf('music-') === 0) {
+      const a = leaf.action;
+      if (a === 'music-toggle') void this.musicToggle();
+      else if (a === 'music-next') void this.musicSkip(1);
+      else if (a === 'music-prev') void this.musicSkip(-1);
+      else if (a === 'music-shuffle') {
+        this.musicShuffle = !this.musicShuffle;
+        this.showMusicBubble(this.musicShuffle ? '随机播放' : '顺序播放', 1800);
+      } else if (a === 'music-reload') {
+        this.musicTracks = null;
+        void this.musicEnsureList(true).then(() => {
+          this.showMusicBubble('已扫描到 ' + (this.musicTracks || []).length + ' 首');
+        });
+      }
+      return;
+    }
     if (leaf.action === 'noop') return; // 分组小标题，点了不动
     if (leaf.action && leaf.action.indexOf('tg-') === 0) {
       const KEYMAP = {
@@ -1418,6 +1466,174 @@ class PetSprite {
     this.stopMove();
     this.customPos = null;
     this.position();
+  }
+
+  // ---------------------------------------------------------------- 音乐播放器
+
+  /** 当前曲名（菜单/气泡用）；歌单还没拉到就返回空 */
+  musicLabel() {
+    const t = this.musicTracks && this.musicTracks[this.musicIdx];
+    return t ? t.name : '';
+  }
+
+  /** 拉歌单（宿主扫「音乐」文件夹）。force=true 时让宿主跳过 5s 缓存重新扫。 */
+  async musicEnsureList(force) {
+    if (this.musicTracks && !force) return this.musicTracks;
+    try {
+      const r = await fetch(BASE + '/music/list' + (force ? '?reload=1' : ''), { cache: 'no-store' });
+      const d = await r.json();
+      this.musicTracks = Array.isArray(d && d.tracks) ? d.tracks : [];
+      this.musicDir = (d && d.dir) || '';
+    } catch (err) {
+      this.musicTracks = [];
+    }
+    return this.musicTracks;
+  }
+
+  /** 复用一个 <audio>：换歌只改 src，不反复新建元素（新建会叠加事件监听） */
+  musicAudio() {
+    if (this.musicEl) return this.musicEl;
+    const a = new Audio();
+    a.volume = 0.8;
+    a.preload = 'auto';
+    a.addEventListener('ended', () => void this.musicSkip(1));
+    a.addEventListener('error', () => {
+      // 坏文件（比如文件头是乱码的 flac）不该让播放器卡死：跳过下一首。
+      // 但连续失败要刹车，否则整列表都是坏的时候会无限跳。
+      this.musicErrCount = (this.musicErrCount || 0) + 1;
+      if (this.musicErrCount > 3) {
+        this.musicPlaying = false;
+        this.musicAnimStop();
+        this.showMusicBubble('连续播放失败，已停止');
+        return;
+      }
+      void this.musicSkip(1, '跳过坏文件');
+    });
+    this.musicEl = a;
+    return a;
+  }
+
+  /**
+   * 顶部气泡显示一行字（歌名/状态）。
+   * 复用碎碎念气泡通道：独立版已把 whisperEnabled 恒关，轮询不会来抢，
+   * 而 renderBubble 里 whisper 的优先级正好低于提醒（提醒来了仍以提醒为准）。
+   */
+  showMusicBubble(text, ms = 3500) {
+    if (this.musicNameTimer) clearTimeout(this.musicNameTimer);
+    this.whisperImage = '';
+    this.whisperView = [{ text }];
+    this.whisperOn = true;
+    this.renderBubble();
+    this.musicNameTimer = setTimeout(() => {
+      this.musicNameTimer = null;
+      this.whisperOn = false;
+      this.whisperView = null;
+      this.renderBubble();
+    }, ms);
+  }
+
+  /** 播第 idx 首（可越界，自动取模）；note 是气泡前缀（如「跳过坏文件」） */
+  async musicPlay(idx, note) {
+    const tracks = await this.musicEnsureList(false);
+    if (!tracks.length) {
+      this.musicPlaying = false;
+      this.musicAnimStop();
+      this.showMusicBubble('「音乐」文件夹里没有可播的歌');
+      return;
+    }
+    const n = tracks.length;
+    this.musicIdx = ((idx % n) + n) % n;
+    const t = tracks[this.musicIdx];
+    const a = this.musicAudio();
+    a.src = BASE + '/music/' + t.i;
+    try {
+      await a.play();
+      this.musicPlaying = true;
+      this.musicErrCount = 0;
+      this.musicAnimStart();
+    } catch (err) {
+      this.musicPlaying = false;
+      this.musicAnimStop();
+    }
+    this.showMusicBubble((note ? note + ' · ' : '') + '♪ ' + t.name);
+  }
+
+  async musicToggle() {
+    const a = this.musicAudio();
+    if (this.musicPlaying) {
+      a.pause();
+      this.musicPlaying = false;
+      this.musicAnimStop();
+      this.showMusicBubble('已暂停' + (this.musicLabel() ? ' · ' + this.musicLabel() : ''));
+      return;
+    }
+    if (!a.src) {
+      await this.musicPlay(this.musicIdx);
+      return;
+    }
+    try {
+      await a.play();
+      this.musicPlaying = true;
+      this.musicAnimStart();
+      this.showMusicBubble('♪ ' + (this.musicLabel() || ''));
+    } catch (err) {
+      // 源失效（文件被删/改名）：重拉歌单再放一次
+      this.musicTracks = null;
+      await this.musicPlay(this.musicIdx);
+    }
+  }
+
+  /** step=1 下一首，-1 上一首；随机模式下忽略 step */
+  async musicSkip(step, note) {
+    const tracks = await this.musicEnsureList(false);
+    if (!tracks.length) return;
+    let next;
+    if (this.musicShuffle && tracks.length > 1 && step > 0) {
+      do {
+        next = Math.floor(Math.random() * tracks.length);
+      } while (next === this.musicIdx);
+    } else {
+      next = this.musicIdx + step;
+    }
+    await this.musicPlay(next, note);
+  }
+
+  /**
+   * 配置里是否存在这个动画名（递归遍历整棵动画树）。
+   * 为什么不能只查 events：哼歌/跳舞这类属于「随机动作分类池」（categories.actions），
+   * 不在 events 下 —— 只按 events 找会永远匹配不到。
+   */
+  musicAnimExists(name) {
+    const seen = new Set();
+    const walk = (v) => {
+      if (typeof v === 'string') return v === name;
+      if (!v || typeof v !== 'object' || seen.has(v)) return false;
+      seen.add(v);
+      if (Array.isArray(v)) return v.some(walk);
+      return Object.keys(v).some((k) => walk(v[k]));
+    };
+    try {
+      return walk(this.animations);
+    } catch (err) {
+      return false;
+    }
+  }
+
+  /** 播放中播「悠闲哼歌」（循环）。配置里找不到就静默跳过，不影响出声。 */
+  musicAnimStart() {
+    try {
+      if (this.musicAnimExists('悠闲哼歌')) this.switchTo('悠闲哼歌', false);
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  musicAnimStop() {
+    try {
+      this.playIdle();
+    } catch (err) {
+      /* ignore */
+    }
   }
 
   renderBubble() {

@@ -52,6 +52,12 @@ export const DEFAULT_USER_CONFIG = {
     marginX: 24,
     marginY: 100,
   },
+  /** 音乐播放器（宠物右键菜单「音乐」）—— 把 mp3/flac/m4a/wav/ogg 丢进「音乐」文件夹即可 */
+  music: {
+    enabled: true,
+    /** 自定义音乐目录；留空 = 自动找 <程序目录>/音乐 或 <上一级>/音乐 */
+    dir: '',
+  },
   /** 余额显示 */
   balance: {
     enabled: true,
@@ -169,6 +175,8 @@ export function buildPetConfig(userCfg) {
         notifyEnabled: !!userCfg.systemNotification,
         // 提醒提示音开关（渲染端据此决定收不收 /work-status 里的 soundSeq 变化）
         reminderSoundEnabled: userCfg.reminderSoundEnabled !== false,
+        // 音乐播放器：关掉时右键菜单里不显示「音乐」这一项
+        musicEnabled: userCfg.music?.enabled !== false,
         corner: userCfg.pet.corner,
         position: {
           corner: userCfg.pet.corner,

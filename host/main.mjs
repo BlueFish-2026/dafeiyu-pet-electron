@@ -25,11 +25,12 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   writeFileSync,
   appendFileSync,
   statSync,
 } from 'node:fs';
-import { join, extname, normalize, resolve, sep, dirname } from 'node:path';
+import { join, extname, normalize, resolve, sep, dirname, relative } from 'node:path';
 
 import { fileURLToPath } from 'node:url';
 
@@ -69,6 +70,13 @@ const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
+  // 音乐播放器：只列 Chromium 实际能解码的容器（APE/WMA/DSD 一律不列）
+  '.mp3': 'audio/mpeg',
+  '.flac': 'audio/flac',
+  '.m4a': 'audio/mp4',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.opus': 'audio/ogg',
 };
 
 // ---------------------------------------------------------------- 日志
@@ -255,6 +263,110 @@ function readBody(req) {
   });
 }
 
+// ---------------------------------------------------------------- 音乐播放器
+
+/**
+ * 音乐文件夹 —— 用户把歌丢进去即可，不需要任何配置。
+ * 查找顺序：userCfg.music.dir → <ROOT>/音乐 → <ROOT>/../音乐
+ * （最后一项兜底「歌放在桌宠根目录、主程序在子目录」这种摆法）
+ */
+function resolveMusicDir() {
+  const configured = String(userCfg?.music?.dir || '').trim();
+  if (configured) {
+    try {
+      if (statSync(configured).isDirectory()) return resolve(configured);
+    } catch {
+      /* 配了但路径不存在 → 继续往下找 */
+    }
+  }
+  const candidates = [join(ROOT, '音乐'), join(ROOT, '..', '音乐')];
+  for (const d of candidates) if (existsSync(d)) return resolve(d);
+  return resolve(candidates[0]);
+}
+
+/** 允许播放的扩展名。故意不含 ape/wma/dsf —— Chromium 解不了，列出来只会让人点了没反应 */
+const MUSIC_EXTS = new Set(['.mp3', '.flac', '.m4a', '.wav', '.ogg', '.opus']);
+let musicCache = { at: 0, dir: '', tracks: [] };
+
+/**
+ * 扫描音乐目录（递归，支持按专辑分子文件夹）。
+ * 结果缓存 5 秒：列表会被反复问，但曲子不多，扫描本身也就几毫秒。
+ */
+function scanMusic(force = false) {
+  const now = Date.now();
+  if (!force && musicCache.at && now - musicCache.at < 5000) return musicCache;
+  const dir = resolveMusicDir();
+  const tracks = [];
+  const walk = (d) => {
+    let items = [];
+    try {
+      items = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return; // 没权限/目录消失：跳过，不打断整轮扫描
+    }
+    for (const it of items) {
+      if (it.name.startsWith('.')) continue;
+      const p = join(d, it.name);
+      if (it.isDirectory()) {
+        walk(p);
+        continue;
+      }
+      const ext = extname(it.name).toLowerCase();
+      if (!MUSIC_EXTS.has(ext)) continue;
+      tracks.push({ name: it.name.replace(/\.[^.]+$/, ''), rel: relative(dir, p) });
+    }
+  };
+  walk(dir);
+  tracks.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+  musicCache = { at: now, dir, tracks };
+  return musicCache;
+}
+
+/**
+ * 音频流输出（支持 Range / 206）。
+ * ⚠️ 不能复用 sendFile：那个函数没有 req 参数、永远返 200 全量，
+ *    浏览器发 Range 请求拿回 200 就没法 seek —— 播放器拖进度条会失效。
+ */
+function sendAudio(req, res, file) {
+  let st;
+  try {
+    st = statSync(file);
+  } catch {
+    return sendText(res, 404, 'dsh-pet: audio vanished');
+  }
+  const total = st.size;
+  const type = MIME[extname(file).toLowerCase()] || 'application/octet-stream';
+  const head = { 'content-type': type, 'accept-ranges': 'bytes', 'cache-control': 'no-store' };
+
+  const range = req.headers.range;
+  if (range) {
+    const m = /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
+    if (m) {
+      let start = m[1] === '' ? null : Number(m[1]);
+      let end = m[2] === '' ? null : Number(m[2]);
+      if (start === null) {
+        // "bytes=-N" = 最后 N 个字节
+        start = Math.max(0, total - (end || 0));
+        end = total - 1;
+      } else if (end === null || end >= total) {
+        end = total - 1;
+      }
+      if (start >= total || start > end) {
+        res.writeHead(416, { ...head, 'content-range': `bytes */${total}` });
+        return res.end();
+      }
+      res.writeHead(206, {
+        ...head,
+        'content-length': end - start + 1,
+        'content-range': `bytes ${start}-${end}/${total}`,
+      });
+      return createReadStream(file, { start, end }).pipe(res);
+    }
+  }
+  res.writeHead(200, { ...head, 'content-length': total });
+  return createReadStream(file).pipe(res);
+}
+
 // ---------------------------------------------------------------- 提醒 → 宠物
 
 /**
@@ -424,6 +536,35 @@ async function handleRoute(req, res) {
       { ...workStatus, soundSeq: reminderSoundSeq },
       { 'cache-control': 'no-cache, no-store' },
     );
+  }
+
+  // ---------- 音乐播放器（列表 + 音频流） ----------
+  // 走 PREFIX 而不是 /api/：渲染端的 <audio src> 要能直接把它当媒体地址用，
+  // CSP 的 media-src 允许 http，这条路天然通（提醒音就是这么走的）。
+  if (rest === 'music/list') {
+    const m = scanMusic(url.searchParams.get('reload') === '1');
+    return sendJson(
+      res,
+      200,
+      {
+        ok: true,
+        dir: m.dir,
+        count: m.tracks.length,
+        tracks: m.tracks.map((t, i) => ({ i, name: t.name })),
+      },
+      { 'cache-control': 'no-store' },
+    );
+  }
+
+  if (rest.startsWith('music/')) {
+    const idx = Number(rest.slice('music/'.length));
+    const m = scanMusic(false);
+    const t = Number.isInteger(idx) && idx >= 0 ? m.tracks[idx] : null;
+    if (!t) return sendText(res, 404, 'dsh-pet: no such track');
+    const file = resolve(join(m.dir, t.rel));
+    // 挡路径逃逸（rel 是我们自己扫出来的，但播放地址是外部可拼的，多校验一次不吃亏）
+    if (!file.startsWith(resolve(m.dir) + sep)) return sendText(res, 403, 'dsh-pet: forbidden');
+    return sendAudio(req, res, file);
   }
 
   // ---------- 提醒提示音（CSP 只允许 http，故由宿主回吐系统 wav） ----------
