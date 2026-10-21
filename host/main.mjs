@@ -313,7 +313,13 @@ function scanMusic(force = false) {
       }
       const ext = extname(it.name).toLowerCase();
       if (!MUSIC_EXTS.has(ext)) continue;
-      tracks.push({ name: it.name.replace(/\.[^.]+$/, ''), rel: relative(dir, p) });
+      // 同名 .lrc 视为该曲的歌词（LRC 标准格式，渲染端按时间戳对齐）
+      const lrcRel = relative(dir, p).replace(/\.[^.\\/]+$/, '.lrc');
+      tracks.push({
+        name: it.name.replace(/\.[^.]+$/, ''),
+        rel: relative(dir, p),
+        lrcRel: existsSync(join(dir, lrcRel)) ? lrcRel : '',
+      });
     }
   };
   walk(dir);
@@ -550,10 +556,32 @@ async function handleRoute(req, res) {
         ok: true,
         dir: m.dir,
         count: m.tracks.length,
-        tracks: m.tracks.map((t, i) => ({ i, name: t.name })),
+        // 菜单最多列几首（渲染端据此截断，避免菜单长到出屏）
+        maxTracks: Math.max(1, Math.min(200, Number(userCfg.music?.maxTracks) || 30)),
+        // lrc=true 表示同目录有同名 .lrc，可以显示歌词
+        tracks: m.tracks.map((t, i) => ({ i, name: t.name, lrc: !!t.lrcRel })),
       },
       { 'cache-control': 'no-store' },
     );
+  }
+
+  // 歌词（.lrc 原文，渲染端自己解析时间戳）。
+  // ⚠️ 必须排在 'music/<i>' 之前：否则 'music/lyric/0' 会先被那个分支吃掉（Number('lyric/0') = NaN → 404）
+  if (rest.startsWith('music/lyric/')) {
+    const idx = Number(rest.slice('music/lyric/'.length));
+    const m = scanMusic(false);
+    const t = Number.isInteger(idx) && idx >= 0 ? m.tracks[idx] : null;
+    if (!t || !t.lrcRel) return sendText(res, 404, 'dsh-pet: no lyric');
+    const file = resolve(join(m.dir, t.lrcRel));
+    if (!file.startsWith(resolve(m.dir) + sep)) return sendText(res, 403, 'dsh-pet: forbidden');
+    let txt = '';
+    try {
+      txt = readFileSync(file, 'utf8');
+    } catch {
+      return sendText(res, 404, 'dsh-pet: lyric vanished');
+    }
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(txt);
   }
 
   if (rest.startsWith('music/')) {

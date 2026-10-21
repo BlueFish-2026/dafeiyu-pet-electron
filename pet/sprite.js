@@ -131,6 +131,11 @@ class PetSprite {
     this.musicEl = null; // 复用的 <audio>
     this.musicNameTimer = null; // 歌名气泡的收起定时器
     this.musicErrCount = 0; // 连续播放失败计数（防止坏文件把播放器卡进死循环）
+    this.musicLyric = []; // 解析后的歌词 [{t: 秒, text}]，按 t 升序
+    this.musicLyricText = ''; // 当前这一句（切行才重绘气泡）
+    this.musicLyricOn = false; // 是否正处于「歌词跟唱」模式
+    this.musicLyricSeq = 0; // 防竞态：快速切歌时丢弃过期的歌词响应
+    this.musicMaxTracks = 30; // 菜单里最多列几首（宿主下发）
 
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
     this.el = document.createElement('div');
@@ -1078,17 +1083,29 @@ class PetSprite {
     if (this.pet.balanceEnabled) tools.push({ label: '查看余额', action: 'show-balance' });
     // 音乐：宠物只当遥控器（选歌/换歌在「音乐」文件夹里做，不做列表 UI）
     if (this.pet.musicEnabled !== false) {
-      const cur = this.musicLabel();
+      const tracks = this.musicTracks || [];
+      // 上限来自配置（music.maxTracks，默认 30）：菜单是垂直列表，无限列会顶出屏幕
+      const max = Math.max(1, Number(this.pet.musicMaxTracks) || this.musicMaxTracks || 30);
+      const shown = tracks.slice(0, max);
+      const pick = shown.map((t) => ({
+        label:
+          (this.musicPlaying && t.i === this.musicIdx ? '▶ ' : '   ') +
+          this.musicClip(t.name, 18) +
+          (t.lrc ? ' ♪' : ''),
+        action: 'music-pick-' + t.i,
+      }));
       tools.push({
         label: '音乐' + (this.musicPlaying ? '（播放中）' : ''),
         children: [
           { label: this.musicPlaying ? '⏸ 暂停' : '▶ 播放', action: 'music-toggle' },
           { label: '⏭ 下一首', action: 'music-next' },
           { label: '⏮ 上一首', action: 'music-prev' },
-          { label: '—— 播放模式 ——', action: 'noop' },
           { label: (this.musicShuffle ? '● ' : '○ ') + '随机播放', action: 'music-shuffle' },
-          { label: '—— 当前曲目 ——', action: 'noop' },
-          { label: cur || '（未开始）', action: 'noop' },
+          { label: '—— 选择曲目（' + tracks.length + ' 首）——', action: 'noop' },
+          ...(pick.length ? pick : [{ label: '（歌单是空的）', action: 'noop' }]),
+          ...(tracks.length > max
+            ? [{ label: '还有 ' + (tracks.length - max) + ' 首未列出', action: 'noop' }]
+            : []),
           { label: '重新扫描歌单', action: 'music-reload' },
         ],
       });
@@ -1268,6 +1285,10 @@ class PetSprite {
         void this.musicEnsureList(true).then(() => {
           this.showMusicBubble('已扫描到 ' + (this.musicTracks || []).length + ' 首');
         });
+      } else if (a.indexOf('music-pick-') === 0) {
+        // 直接点某首：不用先暂停再数着切
+        const i = Number(a.slice('music-pick-'.length));
+        if (Number.isInteger(i) && i >= 0) void this.musicPlay(i);
       }
       return;
     }
@@ -1484,6 +1505,7 @@ class PetSprite {
       const d = await r.json();
       this.musicTracks = Array.isArray(d && d.tracks) ? d.tracks : [];
       this.musicDir = (d && d.dir) || '';
+      this.musicMaxTracks = Number(d && d.maxTracks) || 30;
     } catch (err) {
       this.musicTracks = [];
     }
@@ -1497,6 +1519,8 @@ class PetSprite {
     a.volume = 0.8;
     a.preload = 'auto';
     a.addEventListener('ended', () => void this.musicSkip(1));
+    // 歌词跟唱：浏览器约每 250ms 触发一次，足够跟住一行（LRC 精度本来就只到 0.01s）
+    a.addEventListener('timeupdate', () => this.musicTickLyric());
     a.addEventListener('error', () => {
       // 坏文件（比如文件头是乱码的 flac）不该让播放器卡死：跳过下一首。
       // 但连续失败要刹车，否则整列表都是坏的时候会无限跳。
@@ -1526,10 +1550,85 @@ class PetSprite {
     this.renderBubble();
     this.musicNameTimer = setTimeout(() => {
       this.musicNameTimer = null;
+      this.musicBubbleRestore(); // 还有歌词就回到歌词，没有就收气泡
+    }, ms);
+  }
+
+  /** 把 LRC 原文解析成 [{t: 秒, text}]。只认行首时间戳；空行（间奏）跳过。 */
+  parseLrc(raw) {
+    const out = [];
+    const text = String(raw || '').replace(/^\uFEFF/, '');
+    for (const line of text.split(/\r?\n/)) {
+      const m = /^\s*\[(\d+):(\d+(?:[.:]\d+)?)\]\s*(.*)$/.exec(line);
+      if (!m) continue;
+      const sec = Number(m[1]) * 60 + Number(String(m[2]).replace(':', '.'));
+      const s = m[3].trim();
+      if (!Number.isFinite(sec) || !s) continue;
+      out.push({ t: sec, text: s });
+    }
+    out.sort((a, b) => a.t - b.t);
+    return out;
+  }
+
+  /** 拉某首歌的歌词（同目录同名 .lrc）。没有就清空 —— 不影响出声。 */
+  async musicLoadLyric(idx) {
+    // 防竞态：快速连切时，早发的请求可能晚回来，用它判断结果是否已作废
+    this.musicLyricSeq = (this.musicLyricSeq || 0) + 1;
+    const seq = this.musicLyricSeq;
+    this.musicLyric = [];
+    this.musicLyricText = '';
+    this.musicLyricOn = false;
+
+    const t = this.musicTracks && this.musicTracks[idx];
+    if (!t || !t.lrc) return;
+    if (this.pet && this.pet.musicLyrics === false) return;
+    try {
+      const r = await fetch(BASE + '/music/lyric/' + idx, { cache: 'no-store' });
+      if (!r.ok) return;
+      const arr = this.parseLrc(await r.text());
+      if (seq !== this.musicLyricSeq) return;
+      this.musicLyric = arr;
+    } catch (err) {
+      /* 拉不到就安静播，不弹错误 */
+    }
+  }
+
+  /** 播放进度变了：算出当前该显示的那一句，变了才重绘气泡 */
+  musicTickLyric() {
+    if (!this.musicPlaying || !this.musicLyric.length) return;
+    if (this.musicNameTimer) return; // 正在显示「切歌/暂停」临时提示，别抢
+    const cur = (this.musicEl && this.musicEl.currentTime) || 0;
+    let text = '';
+    for (const line of this.musicLyric) {
+      if (line.t <= cur + 0.15) text = line.text;
+      else break;
+    }
+    if (!text || text === this.musicLyricText) return;
+    this.musicLyricText = text;
+    this.musicLyricOn = true;
+    this.whisperImage = '';
+    this.whisperView = [{ text }];
+    this.whisperOn = true;
+    this.renderBubble();
+  }
+
+  /** 临时提示到期：有歌词就回到歌词，否则收气泡 */
+  musicBubbleRestore() {
+    if (this.musicPlaying && this.musicLyricText) {
+      this.whisperImage = '';
+      this.whisperView = [{ text: this.musicLyricText }];
+      this.whisperOn = true;
+    } else {
       this.whisperOn = false;
       this.whisperView = null;
-      this.renderBubble();
-    }, ms);
+    }
+    this.renderBubble();
+  }
+
+  /** 菜单里的歌名截断（菜单固定宽度，长名会顶出去） */
+  musicClip(s, n) {
+    const t = String(s || '');
+    return t.length > n ? t.slice(0, n - 1) + '…' : t;
   }
 
   /** 播第 idx 首（可越界，自动取模）；note 是气泡前缀（如「跳过坏文件」） */
@@ -1546,6 +1645,7 @@ class PetSprite {
     const t = tracks[this.musicIdx];
     const a = this.musicAudio();
     a.src = BASE + '/music/' + t.i;
+    void this.musicLoadLyric(this.musicIdx); // 并发拉歌词，不阻塞出声
     try {
       await a.play();
       this.musicPlaying = true;

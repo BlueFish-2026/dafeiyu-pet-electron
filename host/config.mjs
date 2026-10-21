@@ -57,6 +57,14 @@ export const DEFAULT_USER_CONFIG = {
     enabled: true,
     /** 自定义音乐目录；留空 = 自动找 <程序目录>/音乐 或 <上一级>/音乐 */
     dir: '',
+    /**
+     * 右键菜单「选择曲目」最多列多少首。
+     * 不写死的原因：菜单是垂直列表，几十项就会长到出屏；但直接砍掉又选不到后面的歌。
+     * 默认 30（6 首场景绰绰有余，30 首菜单约 1000px 尚可滚动），歌多了自己调大。
+     */
+    maxTracks: 30,
+    /** 播放时是否在头顶气泡显示歌词（有同名 .lrc 才有效） */
+    lyrics: true,
   },
   /** 余额显示 */
   balance: {
@@ -177,6 +185,10 @@ export function buildPetConfig(userCfg) {
         reminderSoundEnabled: userCfg.reminderSoundEnabled !== false,
         // 音乐播放器：关掉时右键菜单里不显示「音乐」这一项
         musicEnabled: userCfg.music?.enabled !== false,
+        // 「选择曲目」最多列几首（菜单是垂直列表，太多会出屏）
+        musicMaxTracks: Math.max(1, Math.min(200, Number(userCfg.music?.maxTracks) || 30)),
+        // 播放时是否显示歌词（需要同目录有同名 .lrc）
+        musicLyrics: userCfg.music?.lyrics !== false,
         corner: userCfg.pet.corner,
         position: {
           corner: userCfg.pet.corner,
