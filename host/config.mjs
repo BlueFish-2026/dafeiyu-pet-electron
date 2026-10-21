@@ -65,6 +65,13 @@ export const DEFAULT_USER_CONFIG = {
     maxTracks: 30,
     /** 播放时是否在头顶气泡显示歌词（有同名 .lrc 才有效） */
     lyrics: true,
+    /**
+     * 播放时播哪段动画：
+     *   'auto'  在「悠闲哼歌 / 轻快摇摆舞 / 可爱宅舞 / 优雅女仆舞」里轮换（每次切歌换一个）
+     *   具体名   固定播那一段
+     *   ''      不播（只出声、不动画）
+     */
+    anim: 'auto',
   },
   /** 余额显示 */
   balance: {
@@ -189,6 +196,8 @@ export function buildPetConfig(userCfg) {
         musicMaxTracks: Math.max(1, Math.min(200, Number(userCfg.music?.maxTracks) || 30)),
         // 播放时是否显示歌词（需要同目录有同名 .lrc）
         musicLyrics: userCfg.music?.lyrics !== false,
+        // 播放动画：'auto' = 在四段里轮换 / 具体动画名 / '' = 不播
+        musicAnim: String(userCfg.music?.anim ?? 'auto'),
         corner: userCfg.pet.corner,
         position: {
           corner: userCfg.pet.corner,

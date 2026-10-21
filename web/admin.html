@@ -747,6 +747,67 @@ async function plSave() {
   }
 }
 
+function plSingerOf(name) {
+  // 文件名约定「歌名 - 歌手」（下载来的基本都是这格式）；解析不出就返回空
+  const parts = String(name).split(' - ');
+  return parts.length > 1 ? parts[parts.length - 1].trim() : '';
+}
+
+let plScanFilter = { q: '', singer: '' };
+
+function plScanFiltered() {
+  const q = plScanFilter.q.trim().toLowerCase();
+  const singer = plScanFilter.singer;
+  return plScan.files.filter((f) => {
+    if (singer && plSingerOf(f.name) !== singer) return false;
+    if (q && f.name.toLowerCase().indexOf(q) < 0) return false;
+    return true;
+  });
+}
+
+function plCheckedCount() {
+  return plScan.files.filter((f) => f._checked).length;
+}
+
+function plUpdateCount() {
+  const el = $('pl-scan-count');
+  if (el) el.textContent = '已选 ' + plCheckedCount() + ' / ' + plScan.files.length;
+}
+
+/** 只重画列表（搜索/筛选时不重建工具栏，输入框才不会失焦） */
+function plRenderScanList() {
+  const list = $('pl-scan-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const items = plScanFiltered();
+  if (!items.length) {
+    const e = document.createElement('div');
+    e.className = 'hint-mini';
+    e.style.padding = '8px 0';
+    e.textContent = '没有匹配的歌曲';
+    list.appendChild(e);
+  }
+  items.forEach((f) => {
+    const lab = document.createElement('label');
+    lab.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!f._checked;
+    cb.onchange = () => {
+      f._checked = cb.checked;
+      plUpdateCount();
+    };
+    const span = document.createElement('span');
+    span.textContent = f.name + (f.lrc ? '  ♪' : '') + (f.inList ? '  （已在歌单）' : '');
+    span.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    if (f.inList) span.style.color = '#9ca3af';
+    lab.appendChild(cb);
+    lab.appendChild(span);
+    list.appendChild(lab);
+  });
+  plUpdateCount();
+}
+
 function plRenderScan() {
   const wrap = $('pl-scan-wrap');
   const box = $('pl-scan');
@@ -761,6 +822,12 @@ function plRenderScan() {
     return;
   }
 
+  // 勾选状态挂在文件对象上：切换搜索/筛选时不会丢
+  plScan.files.forEach((f) => {
+    if (f._checked === undefined) f._checked = !f.inList; // 已在歌单的默认不勾
+  });
+  plScanFilter = { q: '', singer: '' };
+
   const head = document.createElement('div');
   head.className = 'hint-mini';
   const inListCount = plScan.files.filter((f) => f.inList).length;
@@ -771,25 +838,75 @@ function plRenderScan() {
     ' · 下次扫描直接从这里打开';
   box.appendChild(head);
 
+  // ---- 工具栏：搜索 / 按歌手 / 全选 ----
+  const bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0';
+
+  const q = document.createElement('input');
+  q.type = 'search';
+  q.placeholder = '搜歌名 / 歌手';
+  q.value = '';
+  q.style.cssText = 'flex:1;min-width:130px;padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px';
+  q.oninput = () => {
+    plScanFilter.q = q.value;
+    plRenderScanList();
+  };
+  bar.appendChild(q);
+
+  const singers = Array.from(new Set(plScan.files.map((f) => plSingerOf(f.name)).filter(Boolean))).sort();
+  if (singers.length) {
+    const sel = document.createElement('select');
+    sel.style.cssText = 'padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;font-size:13px';
+    const all = document.createElement('option');
+    all.value = '';
+    all.textContent = '全部歌手（' + singers.length + '）';
+    sel.appendChild(all);
+    singers.forEach((s) => {
+      const o = document.createElement('option');
+      o.value = s;
+      o.textContent = s;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => {
+      plScanFilter.singer = sel.value;
+      plRenderScanList();
+    };
+    bar.appendChild(sel);
+  }
+
+  const bAll = document.createElement('button');
+  bAll.className = 'ghost';
+  bAll.textContent = '全选';
+  bAll.onclick = () => {
+    plScanFiltered().forEach((f) => (f._checked = true));
+    plRenderScanList();
+  };
+
+  const bNone = document.createElement('button');
+  bNone.className = 'ghost';
+  bNone.textContent = '全不选';
+  bNone.onclick = () => {
+    plScanFiltered().forEach((f) => (f._checked = false));
+    plRenderScanList();
+  };
+
+  bar.appendChild(bAll);
+  bar.appendChild(bNone);
+  box.appendChild(bar);
+
+  // ---- 列表 ----
   const list = document.createElement('div');
-  list.style.cssText = 'max-height:240px;overflow:auto;margin:8px 0;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px';
-  plScan.files.forEach((f, i) => {
-    const lab = document.createElement('label');
-    lab.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    // 已经在当前歌单里的默认不勾（省得反复加同一批），想加还是能手动勾回来
-    cb.checked = !f.inList;
-    cb.dataset.i = String(i);
-    const span = document.createElement('span');
-    span.textContent = f.name + (f.lrc ? '  ♪' : '') + (f.inList ? '  （已在歌单）' : '');
-    span.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    if (f.inList) span.style.color = '#9ca3af';
-    lab.appendChild(cb);
-    lab.appendChild(span);
-    list.appendChild(lab);
-  });
+  list.id = 'pl-scan-list';
+  list.style.cssText = 'max-height:240px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;padding:6px 10px';
   box.appendChild(list);
+
+  // ---- 底部：已选计数 + 加入 ----
+  const foot = document.createElement('div');
+  foot.style.cssText = 'display:flex;gap:10px;align-items:center;margin-top:8px';
+  const count = document.createElement('span');
+  count.className = 'hint-mini';
+  count.id = 'pl-scan-count';
+  foot.appendChild(count);
 
   const btn = document.createElement('button');
   btn.className = 'primary';
@@ -797,7 +914,7 @@ function plRenderScan() {
   btn.onclick = async () => {
     const l = plCurrent();
     if (!l) return;
-    const picked = Array.from(list.querySelectorAll('input[type=checkbox]:checked')).map((c) => plScan.files[Number(c.dataset.i)]);
+    const picked = plScan.files.filter((f) => f._checked);
     if (!picked.length) {
       $('pl-hint').textContent = '一首都没选';
       return;
@@ -817,7 +934,10 @@ function plRenderScan() {
     await plSave();
     $('pl-hint').textContent = '加入 ' + added + ' 首（跳过重复 ' + (picked.length - added) + ' 首）';
   };
-  box.appendChild(btn);
+  foot.appendChild(btn);
+  box.appendChild(foot);
+
+  plRenderScanList();
 }
 
 $('pl-select').onchange = async (e) => {

@@ -139,6 +139,7 @@ class PetSprite {
     this.musicLyricOn = false; // 是否正处于「歌词跟唱」模式
     this.musicLyricSeq = 0; // 防竞态：快速切歌时丢弃过期的歌词响应
     this.musicMaxTracks = 30; // 菜单里最多列几首（宿主下发）
+    this.musicAnimName = ''; // 上一首用的播放动画（auto 轮换时避开它）
 
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
     this.el = document.createElement('div');
@@ -1831,10 +1832,28 @@ class PetSprite {
     }
   }
 
-  /** 播放中播「悠闲哼歌」（循环）。配置里找不到就静默跳过，不影响出声。 */
+  /**
+   * 播放动画。
+   * music.anim = 'auto' → 在「悠闲哼歌 / 轻快摇摆舞 / 可爱宅舞 / 优雅女仆舞」里轮换
+   *   （每次切歌避开上一次用的，不会两首连着同一段）
+   * = 具体动画名 → 固定那一段；= '' → 不播（只出声）
+   */
   musicAnimStart() {
     try {
-      if (this.musicAnimExists('悠闲哼歌')) this.switchTo('悠闲哼歌', false);
+      const want = String((this.pet && this.pet.musicAnim) ?? 'auto');
+      if (want === '') return; // 明确关掉
+      let name = want;
+      if (want === 'auto') {
+        const POOL = ['悠闲哼歌', '轻快摇摆舞', '可爱宅舞', '优雅女仆舞'];
+        const fresh = POOL.filter((n) => n !== this.musicAnimName && this.musicAnimExists(n));
+        const all = POOL.filter((n) => this.musicAnimExists(n));
+        const use = fresh.length ? fresh : all;
+        name = use.length ? use[Math.floor(Math.random() * use.length)] : '';
+      }
+      if (name && this.musicAnimExists(name)) {
+        this.musicAnimName = name;
+        this.switchTo(name, false);
+      }
     } catch (err) {
       /* ignore */
     }
