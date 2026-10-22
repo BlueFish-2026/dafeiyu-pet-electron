@@ -1939,6 +1939,18 @@ class PetSprite {
       // 余额「文字说明」（不可用状态）同样要换行变体：默认 nowrap 会把长文案顶出宠物宽度
       this.workOn || (this.whisperOn && !!this.whisperView) || (this.bubbleOn && this.balanceWrap),
     );
+    // 歌词专用变体：只在「正在滚歌词」时挂。切歌时的歌名提示不挂（沿用原软糖体），
+    // 提醒（workOn 优先级更高）也不挂。
+    const bubbleIsLyric =
+      !this.workOn &&
+      this.musicPlaying &&
+      this.musicLyricOn &&
+      this.whisperOn &&
+      !!this.musicLyricText &&
+      !!this.whisperView &&
+      this.whisperView[0] &&
+      this.whisperView[0].text === this.musicLyricText;
+    this.bubble.classList.toggle('is-lyric', bubbleIsLyric);
     this.bubble.classList.toggle(S.MEME_BUBBLE_CLASS, !!whisperImg);
     if (this.workOn) {
       // 工作状态气泡：workOn 期间占位（文本缺失时隐藏，绝不让更弱的碎碎念/余额气泡反超）

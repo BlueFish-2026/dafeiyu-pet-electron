@@ -114,6 +114,16 @@
         white-space: normal;
         overflow-wrap: anywhere;
       }
+      /* 歌词变体：与提醒气泡（软糖体）区分开。
+         歌词是逐行滚动的长文本，要「快速扫读」，装饰性卡通字体在这类场景里吃力；
+         改用系统黑体，字号略收、行高放稳，长时间看着不累。
+         只在「正在滚歌词」时挂这个 class —— 切歌时的歌名提示仍走原来的软糖体。 */
+      .pet-bubble.is-lyric {
+        font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', sans-serif;
+        font-size: calc(var(--pet-size, 462px) * 0.046);
+        line-height: 1.5;
+        letter-spacing: calc(var(--pet-size, 462px) * 0.0015);
+      }
       .pet-bub-row {
         display: flex;
         justify-content: space-between;
