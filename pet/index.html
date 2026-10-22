@@ -75,9 +75,11 @@
         border-radius: calc(var(--pet-size, 462px) * 0.035);
         background: rgba(255, 255, 255, 0.92);
         color: #2b2b2b;
-        font-family:
-          'ShangshouSoftCandy', 'Yuanti SC', 'YouYuan', '幼圆', 'Comic Sans MS', 'PingFang SC', 'Microsoft YaHei',
-          sans-serif;
+        /* 可爱软糖体优先。实测它只收 GB2312 简体字（6763 字，繁体几乎全缺），
+           繁体/生僻字会逐字回退 → 第一兜底选「幼圆」（同为圆体，风格最接近），
+           再不行才是微软雅黑。删掉 macOS 专用项（Yuanti SC / PingFang SC）
+           和无中文字形的 Comic Sans MS，避免无谓回退。 */
+        font-family: 'ShangshouSoftCandy', 'YouYuan', '幼圆', 'Microsoft YaHei', sans-serif;
         font-size: calc(var(--pet-size, 462px) * 0.0455);
         line-height: 1.6;
         z-index: 3;
@@ -119,7 +121,8 @@
          改用系统黑体，字号略收、行高放稳，长时间看着不累。
          只在「正在滚歌词」时挂这个 class —— 切歌时的歌名提示仍走原来的软糖体。 */
       .pet-bubble.is-lyric {
-        font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', sans-serif;
+        /* 字体**不单独指定** —— 与提醒气泡统一用可爱软糖体（视觉一致性优先）。
+           这里只调排版：歌词是长句，字号略收、行高放稳，扫读更舒服。 */
         font-size: calc(var(--pet-size, 462px) * 0.046);
         line-height: 1.5;
         letter-spacing: calc(var(--pet-size, 462px) * 0.0015);
