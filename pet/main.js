@@ -605,7 +605,10 @@ async function handleBridgeRequest(request) {
   const headers = { 'access-control-allow-origin': '*' }; // 渲染端页面是 file:// 源，scheme 跨源需 CORS
   if (resp.contentType) headers['content-type'] = resp.contentType;
   if (resp.file) {
-    // 素材：直接读盘返回（宿主已解析好绝对路径；带 range 让视频能拖动进度条）
+    // 素材：整份读盘返回（宿主已解析好绝对路径）。
+    // ⚠️ 这里**没有实现 Range**（原注释写"带 range"，与代码不符）。
+    //    独立版 BASE 走 HTTP 直连宿主（宿主不设 DSH_PET_BRIDGE），素材与音频都不经过这条分支；
+    //    只有 DSH 网页版的 bridge 模式才会用它，而那个场景视频是循环播放、不需要拖进度，整份读够用。
     try {
       const data = await fsPromises.readFile(resp.file);
       return new Response(new Uint8Array(data), { status: resp.status || 200, headers });

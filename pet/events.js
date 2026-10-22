@@ -502,7 +502,12 @@ function startLoops() {
     window.__dshPetTimerLoop = true;
     const timerPillLoop = async () => {
       try {
-        const res = await fetch(ORIGIN + '/api/seat-timer', { cache: 'no-store' });
+        // 必须带超时：这是 1s 轮询，宿主假死时裸 fetch 会挂到 TCP 超时（几十秒），
+        // 角标跟着卡住不动。5s 足够本地请求，超了就当这一轮失败，下一轮继续。
+        const res = await fetch(ORIGIN + '/api/seat-timer', {
+          cache: 'no-store',
+          signal: AbortSignal.timeout(5000),
+        });
         if (res.ok) {
           const info = await res.json();
           for (const s of sprites) s.renderTimerPill(info);
