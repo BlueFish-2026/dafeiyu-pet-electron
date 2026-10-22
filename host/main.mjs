@@ -1725,6 +1725,16 @@ app.whenReady().then(async () => {
   startHelper();
   startHelperWatchdog(); // 渲染进程看门狗：宠物静默假死时自动拉起（详见 checkHelperWatchdog）
   createTray();
+}).catch((e) => {
+  // 兜底：启动链上任何未预料的异常（最典型是 pet-config.default.json 被改坏）
+  // 以前会变成"未处理的 Promise rejection"，主进程静默退出、宠物不出现，用户毫无线索。
+  // 这里统一弹框 + 写日志，至少告诉他哪个文件出了问题。
+  try {
+    log('启动异常：' + ((e && e.stack) || e));
+  } catch {
+    /* 日志都写不了就别再抛了 */
+  }
+  fatal('启动异常', (e && e.stack) || String(e));
 });
 
 app.on('before-quit', () => {

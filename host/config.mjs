@@ -154,10 +154,27 @@ export function saveUserConfig(cfg) {
   renameSync(tmp, USER_CONFIG_PATH);
 }
 
-/** 读取宠物默认配置（DSH 导出的成品，结构 = { main: ClientConfig }） */
+/**
+ * 读取宠物默认配置（DSH 导出的成品，结构 = { main: ClientConfig }）。
+ *
+ * ⚠️ 这个文件决定了宠物能不能显示（106 段动画的索引、气泡样式、状态机都在里面）。
+ * 以前这里裸调 readFileSync + JSON.parse：文件被误删/改坏/更新只落了一半时，
+ * 异常会一路冒到 app.whenReady() 的 Promise 里，主进程静默崩掉 ——
+ * 用户看到的现象只是「宠物没出来」，完全不知道为什么。
+ * 现在包一层并抛出带路径的可读错误，让启动链能弹框指出来。
+ */
 export function loadDefaultPetConfig() {
-  const raw = JSON.parse(readFileSync(DEFAULT_PET_CONFIG_PATH, 'utf8'));
-  return raw;
+  let text;
+  try {
+    text = readFileSync(DEFAULT_PET_CONFIG_PATH, 'utf8');
+  } catch (e) {
+    throw new Error(`宠物配置文件缺失或无法读取：\n${DEFAULT_PET_CONFIG_PATH}\n(${e && e.message})`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(`宠物配置 JSON 解析失败（文件可能被改坏）：\n${DEFAULT_PET_CONFIG_PATH}\n(${e && e.message})`);
+  }
 }
 
 /**
