@@ -1755,8 +1755,9 @@ class PetSprite {
   }
 
   async musicToggle() {
-    await this.musicLoadActive(); // 每次操作前刷新，保证设置页刚加的歌能拿到
     const a = this.musicAudio();
+    // 暂停不需要刷新歌单；而且重拉会重置 tracks 与洗牌队列，
+    // 随机模式恢复播放后就可能重播刚唱过的那几首。
     if (this.musicPlaying) {
       a.pause();
       this.musicPlaying = false;
@@ -1764,6 +1765,8 @@ class PetSprite {
       this.showMusicBubble('已暂停' + (this.musicLabel() ? ' · ' + this.musicLabel() : ''));
       return;
     }
+    // 只有「要开始播」才刷新，保证设置页刚加的歌能拿到
+    await this.musicLoadActive();
     if (!a.src) {
       if (this.musicMode === 'shuffle') this.buildShuffle();
       const first = this.musicMode === 'shuffle' && this.shuffleQueue.length ? this.shuffleQueue[0] : this.musicIdx;

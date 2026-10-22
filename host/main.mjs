@@ -287,48 +287,6 @@ function resolveMusicDir() {
 
 /** 允许播放的扩展名。故意不含 ape/wma/dsf —— Chromium 解不了，列出来只会让人点了没反应 */
 const MUSIC_EXTS = new Set(['.mp3', '.flac', '.m4a', '.wav', '.ogg', '.opus']);
-let musicCache = { at: 0, dir: '', tracks: [] };
-
-/**
- * 扫描音乐目录（递归，支持按专辑分子文件夹）。
- * 结果缓存 5 秒：列表会被反复问，但曲子不多，扫描本身也就几毫秒。
- */
-function scanMusic(force = false) {
-  const now = Date.now();
-  if (!force && musicCache.at && now - musicCache.at < 5000) return musicCache;
-  const dir = resolveMusicDir();
-  const tracks = [];
-  const walk = (d) => {
-    let items = [];
-    try {
-      items = readdirSync(d, { withFileTypes: true });
-    } catch {
-      return; // 没权限/目录消失：跳过，不打断整轮扫描
-    }
-    for (const it of items) {
-      if (it.name.startsWith('.')) continue;
-      const p = join(d, it.name);
-      if (it.isDirectory()) {
-        walk(p);
-        continue;
-      }
-      const ext = extname(it.name).toLowerCase();
-      if (!MUSIC_EXTS.has(ext)) continue;
-      // 同名 .lrc 视为该曲的歌词（LRC 标准格式，渲染端按时间戳对齐）
-      const lrcRel = relative(dir, p).replace(/\.[^.\\/]+$/, '.lrc');
-      tracks.push({
-        name: it.name.replace(/\.[^.]+$/, ''),
-        rel: relative(dir, p),
-        lrcRel: existsSync(join(dir, lrcRel)) ? lrcRel : '',
-      });
-    }
-  };
-  walk(dir);
-  tracks.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-  musicCache = { at: now, dir, tracks };
-  return musicCache;
-}
-
 /**
  * 音频流输出（支持 Range / 206）。
  * ⚠️ 不能复用 sendFile：那个函数没有 req 参数、永远返 200 全量，
@@ -390,6 +348,17 @@ const PLAYLIST_FILE = join(ROOT, 'config', 'playlists.json');
 const PLAY_MODES = new Set(['sequential', 'repeat-one', 'shuffle']);
 // lastScanDir：上次扫描用过的文件夹，下次弹对话框直接从这里打开（省得每次从头翻）
 let playlists = { version: 1, active: '', lists: [], lastScanDir: '' };
+
+/**
+ * 「查过 Lrclib 但没命中」的曲目路径。
+ * 没有它的话，冷门歌每切一次就联网查一次（最坏每次等 6s 超时），纯浪费。
+ * 只放内存：重启后重查一次可以接受，也不往用户目录里塞标记文件。
+ * 注意：本地后来放了 .lrc 时，existsSync 会先命中，不受这个缓存影响。
+ */
+const lyricMiss = new Set();
+
+/** /music/active 的曲目状态缓存（lrc/missing 要对每首歌做两次 stat，歌多时开菜单会卡） */
+let activeTracksCache = { key: '', at: 0, tracks: null };
 
 function sanitizeList(l) {
   if (!l || !l.id) return null;
@@ -464,6 +433,27 @@ function scanAudioDir(dir) {
 
 function activeList() {
   return playlists.lists.find((l) => l.id === playlists.active) || null;
+}
+
+/**
+ * 当前歌单的曲目 + 每首的 lrc/missing 状态。
+ * 每首歌要两次 existsSync，几百首时每次开菜单都跑会明显卡 → 缓存 3 秒。
+ * key 里带曲目数，加/删歌能立刻失效；只有「删一首同时加一首」会延迟最多 3 秒。
+ */
+function activeTracks(l) {
+  const key = l.id + '#' + l.tracks.length;
+  const now = Date.now();
+  if (activeTracksCache.key === key && activeTracksCache.tracks && now - activeTracksCache.at < 3000) {
+    return activeTracksCache.tracks;
+  }
+  const tracks = l.tracks.map((t, i) => ({
+    i,
+    name: t.name,
+    lrc: existsSync(t.path.replace(/\.[^.]+$/, '.lrc')),
+    missing: !existsSync(t.path),
+  }));
+  activeTracksCache = { key, at: now, tracks };
+  return tracks;
 }
 
 /**
@@ -721,12 +711,7 @@ async function handleRoute(req, res) {
               id: l.id,
               name: l.name,
               mode: l.mode,
-              tracks: l.tracks.map((t, i) => ({
-                i,
-                name: t.name,
-                lrc: existsSync(t.path.replace(/\.[^.]+$/, '.lrc')),
-                missing: !existsSync(t.path),
-              })),
+              tracks: activeTracks(l),
             }
           : null,
         maxTracks: Math.max(1, Math.min(200, Number(userCfg.music?.maxTracks) || 30)),
@@ -962,10 +947,16 @@ async function handleApi(path, req, res, url) {
       }
     }
 
+    // 查过没命中的别再联网 —— 否则冷门歌每次切到都要等一次 6s 超时
+    if (lyricMiss.has(t.path)) {
+      return sendJson(res, 200, { ok: false, reason: 'not-found', cached: true });
+    }
+
     try {
       const hit = await fetchLyricFromLrclib(t.name, dur);
       if (!hit) {
-        log(`歌词匹配未命中：${t.name}`);
+        lyricMiss.add(t.path);
+        log(`歌词匹配未命中（本次运行不再重试）：${t.name}`);
         return sendJson(res, 200, { ok: false, reason: 'not-found' });
       }
       try {
