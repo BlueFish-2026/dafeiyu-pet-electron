@@ -268,6 +268,18 @@ class PetSprite {
     if (this.whisperLoopTimer !== null) window.clearTimeout(this.whisperLoopTimer);
     if (this.broadcastLoopTimer !== null) window.clearTimeout(this.broadcastLoopTimer);
     if (this.workTimer !== null) window.clearTimeout(this.workTimer);
+    // 音乐资源：定时器要清，<audio> 更要停 —— 否则宠物被销毁后歌还在响
+    if (this.musicNameTimer !== null) window.clearTimeout(this.musicNameTimer);
+    if (this.musicEl) {
+      try {
+        this.musicEl.pause();
+        this.musicEl.src = '';
+      } catch {
+        /* 已经停了 */
+      }
+      this.musicEl = null;
+    }
+    this.musicPlaying = false;
     if (this.chatClose) {
       this.chatClose();
       this.chatClose = null;
@@ -455,6 +467,10 @@ class PetSprite {
   // 动画链（与浏览器 pickNext 语义一致，纯逻辑在 shared）
   playIdle() {
     this.stopMove();
+    // 优先级：提醒 > 音乐 > 随机动作。
+    // 少了这一步会出这样的怪事：久坐提醒正播「原地踱步张望」，宠物走到终点触发 playIdle，
+    // 直接把动画换成哼歌 —— 气泡还顶着提醒文案，动画却对不上。
+    if (this.resumeWorkStatusAnim()) return;
     // 音乐播放中：不随机换动作（连带漫游也停），保持播放动画
     if (this.resumeMusicAnim()) return;
     const { animations, animationWeights } = { animations: this.animations, animationWeights: this.weights };
