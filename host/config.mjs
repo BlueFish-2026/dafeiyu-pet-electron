@@ -66,6 +66,12 @@ export const DEFAULT_USER_CONFIG = {
     /** 播放时是否在头顶气泡显示歌词（有同名 .lrc 才有效） */
     lyrics: true,
     /**
+     * 本地没有 .lrc 时，是否自动去 Lrclib（开放歌词库）匹配一次。
+     * 命中的歌词会写成本地同名 .lrc 缓存 → 之后不再联网。
+     * 关掉 = 完全离线，只认本地已有歌词文件。
+     */
+    lyricFetch: true,
+    /**
      * 播放时播哪段动画：
      *   'auto'  在「悠闲哼歌 / 轻快摇摆舞 / 可爱宅舞 / 优雅女仆舞」里轮换（每次切歌换一个）
      *   具体名   固定播那一段
@@ -198,6 +204,8 @@ export function buildPetConfig(userCfg) {
         musicLyrics: userCfg.music?.lyrics !== false,
         // 播放动画：'auto' = 在四段里轮换 / 具体动画名 / '' = 不播
         musicAnim: String(userCfg.music?.anim ?? 'auto'),
+        // 本地没歌词时，是否允许自动去 Lrclib 匹配（命中会缓存成本地 .lrc）
+        musicLyricFetch: userCfg.music?.lyricFetch !== false,
         corner: userCfg.pet.corner,
         position: {
           corner: userCfg.pet.corner,

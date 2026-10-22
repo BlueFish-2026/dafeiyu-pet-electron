@@ -1608,7 +1608,7 @@ class PetSprite {
     return out;
   }
 
-  /** 拉当前这首的歌词（同目录同名 .lrc）。没有就清空，不影响出声 */
+  /** 拉当前这首的歌词：先本地同名 .lrc，没有再去 Lrclib 匹配。都没有就安静播 */
   async musicLoadLyric(idx) {
     // 防竞态：快速连切时早发的请求可能晚回来，用 seq 判断结果是否作废
     this.musicLyricSeq = (this.musicLyricSeq || 0) + 1;
@@ -1618,19 +1618,54 @@ class PetSprite {
     this.musicLyricOn = false;
 
     const t = this.musicTracks && this.musicTracks[idx];
-    if (!t || !t.lrc) return;
+    if (!t) return;
     if (this.pet && this.pet.musicLyrics === false) return;
     const lid = this.musicList ? this.musicList.id : '';
+
+    if (t.lrc) {
+      try {
+        const r = await fetch(BASE + '/music/lyric/' + idx + (lid ? '?list=' + encodeURIComponent(lid) : ''), {
+          cache: 'no-store',
+        });
+        if (r.ok) {
+          const arr = this.parseLrc(await r.text());
+          if (seq === this.musicLyricSeq) this.musicLyric = arr;
+          return;
+        }
+      } catch (err) {
+        /* 本地读失败 → 落到下面走在线匹配 */
+      }
+    }
+    await this.musicFetchLyric(idx, seq);
+  }
+
+  /**
+   * 本地没歌词 → 去 Lrclib 匹配一次（宿主查 + 宿主缓存成同名 .lrc）。
+   * 全程静默：网络失败、没命中都不影响播放，也不弹错。
+   * ⚠️ 必须有 duration：时长是区分原版/翻唱/现场的唯一可靠依据，没有就别瞎配。
+   */
+  async musicFetchLyric(idx, seq) {
+    if (this.pet && this.pet.musicLyricFetch === false) return;
+    const dur = (this.musicEl && this.musicEl.duration) || 0;
+    if (!dur || !Number.isFinite(dur)) return;
+    const lid = this.musicList ? this.musicList.id : '';
     try {
-      const r = await fetch(BASE + '/music/lyric/' + idx + (lid ? '?list=' + encodeURIComponent(lid) : ''), {
-        cache: 'no-store',
-      });
-      if (!r.ok) return;
-      const arr = this.parseLrc(await r.text());
-      if (seq !== this.musicLyricSeq) return;
-      this.musicLyric = arr;
+      const r = await fetch(
+        ORIGIN +
+          '/api/music/lyric-fetch?i=' + idx +
+          '&dur=' + Math.round(dur) +
+          (lid ? '&list=' + encodeURIComponent(lid) : ''),
+        { cache: 'no-store' },
+      );
+      const d = await r.json();
+      if (seq !== this.musicLyricSeq) return; // 期间切歌了，结果作废
+      if (d && d.ok && d.lrc) {
+        this.musicLyric = this.parseLrc(d.lrc);
+        this.musicTickLyric();
+        this.showMusicBubble('♪ 已匹配歌词', 1800);
+      }
     } catch (err) {
-      /* 拉不到就安静播 */
+      /* 静默：网络问题不该打断听歌 */
     }
   }
 
@@ -1705,7 +1740,6 @@ class PetSprite {
     a.loop = this.musicMode === 'repeat-one';
     const lid = this.musicList ? this.musicList.id : '';
     a.src = BASE + '/music/track/' + t.i + (lid ? '?list=' + encodeURIComponent(lid) : '');
-    void this.musicLoadLyric(this.musicIdx); // 并发拉歌词，不阻塞出声
     try {
       await a.play();
       this.musicPlaying = true;
@@ -1715,6 +1749,8 @@ class PetSprite {
       this.musicPlaying = false;
       this.musicAnimStop();
     }
+    // ⚠️ 放在 play() 之后：这时 audio.duration 才就绪，Lrclib 才能按时长筛掉翻唱/现场版
+    void this.musicLoadLyric(this.musicIdx);
     this.showMusicBubble((note ? note + ' · ' : '') + '♪ ' + t.name);
   }
 

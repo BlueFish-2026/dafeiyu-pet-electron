@@ -17,7 +17,7 @@
  * 并且从不设 DSH_PET_BRIDGE 时走 HTTP 直连宿主——正是为「手动 start-desktop」预留的路径。
  */
 
-import { app, powerMonitor, Notification, dialog, Tray, Menu, shell, nativeImage } from 'electron';
+import { app, powerMonitor, Notification, dialog, Tray, Menu, shell, nativeImage, net } from 'electron';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import {
@@ -490,6 +490,49 @@ function ensureDefaultPlaylist() {
   log(`没有歌单，已按「音乐」文件夹生成默认歌单：${files.length} 首`);
 }
 
+// ---------------------------------------------------------------- 歌词自动匹配（Lrclib）
+
+const LRCLIB_SEARCH = 'https://lrclib.net/api/search';
+// Lrclib 官网要求带能识别客户端的 UA
+const LRCLIB_UA = 'DaFeiYuPet/1.3 (+https://github.com/BlueFish-2026/dafeiyu-pet-electron)';
+
+/**
+ * 去 Lrclib（开放歌词库）找同步歌词。
+ *
+ * 匹配策略：
+ *   ① 用**整串文件名**做全文搜索 —— 不猜「歌名-歌手」的先后顺序（用户命名两种都有：
+ *      「开始懂了 - 孙燕姿」是歌名在前，「周杰倫 - 雙截棍」是歌手在前）。
+ *   ② 再用**音频时长 ±5 秒**筛 —— 光靠名字会配到翻唱/现场版，时长是唯一可靠的判别。
+ *
+ * @returns {Promise<{lrc:string, meta:{track:string,artist:string,diff:number}}|null>}
+ */
+async function fetchLyricFromLrclib(trackName, durationSec) {
+  const q = String(trackName || '').trim();
+  if (!q) return null;
+  const res = await net.fetch(LRCLIB_SEARCH + '?q=' + encodeURIComponent(q), {
+    headers: { 'User-Agent': LRCLIB_UA, accept: 'application/json' },
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!res.ok) throw new Error('Lrclib HTTP ' + res.status);
+  const list = await res.json();
+  if (!Array.isArray(list) || !list.length) return null;
+
+  const want = Number(durationSec) || 0;
+  const scored = list
+    .filter((x) => x && typeof x.syncedLyrics === 'string' && x.syncedLyrics.trim())
+    .map((x) => ({ x, diff: want > 0 ? Math.abs(Number(x.duration || 0) - want) : 0 }))
+    // 拿得到时长就必须卡在 ±5 秒内；拿不到（音频还没就绪）就退化成"取第一条有同步歌词的"
+    .filter((it) => (want > 0 ? it.diff <= 5 : true))
+    .sort((a, b) => a.diff - b.diff);
+
+  if (!scored.length) return null;
+  const best = scored[0].x;
+  return {
+    lrc: best.syncedLyrics,
+    meta: { track: String(best.trackName || ''), artist: String(best.artistName || ''), diff: scored[0].diff },
+  };
+}
+
 // ---------------------------------------------------------------- 提醒 → 宠物
 
 /**
@@ -896,6 +939,46 @@ async function handleApi(path, req, res, url) {
     l.mode = mode;
     savePlaylists();
     return sendJson(res, 200, { ok: true, id, mode });
+  }
+
+  // 自动匹配歌词：本地没有 .lrc 时由渲染端来问一次。
+  // 命中就**写成本地同名 .lrc** —— 之后走原有本地链路，永不再联网。
+  if (action === 'music/lyric-fetch' && req.method === 'GET') {
+    if (userCfg.music?.lyricFetch === false) return sendJson(res, 200, { ok: false, reason: 'disabled' });
+    const idx = Number(url.searchParams.get('i'));
+    const dur = Number(url.searchParams.get('dur')) || 0;
+    const l = playlists.lists.find((x) => x.id === (url.searchParams.get('list') || playlists.active));
+    const t = l && Number.isInteger(idx) && idx >= 0 ? l.tracks[idx] : null;
+    if (!t) return sendJson(res, 400, { ok: false, error: 'no such track' });
+    if (!MUSIC_EXTS.has(extname(t.path).toLowerCase())) return sendJson(res, 400, { ok: false, error: 'not audio' });
+
+    const lrcPath = t.path.replace(/\.[^.]+$/, '.lrc');
+    // 本地已经有了（并发请求 / 外部刚放进来）→ 直接回本地，不联网
+    if (existsSync(lrcPath)) {
+      try {
+        return sendJson(res, 200, { ok: true, lrc: readFileSync(lrcPath, 'utf8'), source: 'local' });
+      } catch {
+        /* 读失败就继续走网络 */
+      }
+    }
+
+    try {
+      const hit = await fetchLyricFromLrclib(t.name, dur);
+      if (!hit) {
+        log(`歌词匹配未命中：${t.name}`);
+        return sendJson(res, 200, { ok: false, reason: 'not-found' });
+      }
+      try {
+        writeFileSync(lrcPath, hit.lrc, 'utf8'); // 落盘缓存：下次本地直读
+      } catch (e) {
+        log('歌词缓存写入失败（不影响本次显示）：' + (e && e.message));
+      }
+      log(`歌词已匹配「${t.name}」→ ${hit.meta.artist} - ${hit.meta.track}（时长差 ${hit.meta.diff.toFixed(1)}s）`);
+      return sendJson(res, 200, { ok: true, lrc: hit.lrc, source: 'lrclib' });
+    } catch (e) {
+      log('歌词匹配失败：' + ((e && e.message) || e));
+      return sendJson(res, 200, { ok: false, reason: 'error' });
+    }
   }
 
   // 选一个文件夹并扫描（设置页「扫描文件夹」按钮）—— 弹系统对话框，只能在主进程做
