@@ -132,12 +132,21 @@ export async function applyUpdate(rootDir, files, onProgress) {
     loaded.push([rel, await fetchText(rel)]);
     if (onProgress) onProgress(i + 1, list.length, rel);
   }
-  const written = [];
+  // 两阶段落盘：先把所有文件写成 .tmp（这一步才可能失败：磁盘满 / 无写权限），
+  // 全部成功后再逐个 rename 覆盖。
+  // 单文件 rename 是原子的，但「写一个替换一个」不是整体原子的 ——
+  // 中途失败会留下「前几个文件已更新、后几个还是旧版」的半新半旧状态，
+  // 那样程序大概率直接起不来。分两阶段后，失败只会留下 .tmp 垃圾，原件不受影响。
+  const staged = [];
   for (const [rel, text] of loaded) {
     const dest = join(rootDir, rel);
     mkdirSync(dirname(dest), { recursive: true });
     const tmp = dest + '.dshupdate.tmp';
     writeFileSync(tmp, text, 'utf8');
+    staged.push([rel, tmp, dest]);
+  }
+  const written = [];
+  for (const [rel, tmp, dest] of staged) {
     renameSync(tmp, dest);
     written.push(rel);
   }

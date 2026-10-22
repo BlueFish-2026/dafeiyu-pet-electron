@@ -410,7 +410,7 @@ function renderReminders() {
     const row = document.createElement('div');
     row.className = 'reminder' + (r.enabled === false ? ' off' : '');
     row.innerHTML =
-      '<input type="time" value="' + (r.time || '09:00') + '">' +
+      '<input type="time" value="' + escapeAttr(r.time || '09:00') + '">' +
       '<input type="text" placeholder="提醒内容，例如：开会" value="' + escapeAttr(r.text || '') + '">' +
       '<select>' +
         '<option value="daily">每天</option>' +

@@ -181,7 +181,10 @@ PetSprite.prototype.startWhisperLoop = function startWhisperLoop() {
 // 命令触发气泡（/chat 斜杠命令）：1s 轻量轮询 /broadcast?pet=<id>，ts 变化即弹气泡。
 // 与碎碎念周期轮询独立（host 广播缓存是另一条通道）：手动触发语义不受 whisperEnabled 门控
 PetSprite.prototype.startBroadcastLoop = function startBroadcastLoop() {
-  if (this.broadcastLoopTimer !== null) return;
+  // ⚠️ 独立版没有任何入口会写入 broadcastCache（host 的 broadcast() 至今无调用点，
+  //    因为没有 /chat 命令通道），这条 1s 轮询只会永远拿到 ts=0 —— 纯空转。
+  //    默认关掉，将来真接上命令通道时把 pet.broadcastEnabled 置 true 即可恢复。
+  if (!this.pet.broadcastEnabled || this.broadcastLoopTimer !== null) return;
   const refresh = async () => {
     try {
       const petId = encodeURIComponent(this.pet.id);
