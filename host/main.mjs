@@ -35,7 +35,16 @@ import { join, extname, normalize, resolve, sep, dirname, relative } from 'node:
 
 import { fileURLToPath } from 'node:url';
 
-import { ROOT, DATA_DIR, ensureDirs, loadUserConfig, saveUserConfig, buildPetConfig, loadDefaultPetConfig } from './config.mjs';
+import {
+  ROOT,
+  DATA_DIR,
+  ensureDirs,
+  loadUserConfig,
+  saveUserConfig,
+  buildPetConfig,
+  loadDefaultPetConfig,
+  deepMerge,
+} from './config.mjs';
 import { queryBalance, resolveApiKey } from './balance.mjs';
 import { ReminderEngine } from './reminders.mjs';
 import { HolidayCalendar } from './holiday.mjs';
@@ -1014,8 +1023,23 @@ async function handleApi(path, req, res, url) {
     } catch {
       return sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' });
     }
-    // 端口不允许热改（要重启），其余字段合并保存
-    const merged = { ...userCfg, ...incoming, port: userCfg.port };
+    // 必须是普通对象：deepMerge 遇到非对象会**直接整体替换**，
+    // 传个字符串进来会把整份配置写坏。
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+      return sendJson(res, 400, { ok: false, error: '配置必须是 JSON 对象' });
+    }
+    // 端口不允许热改（要重启），其余字段合并保存。
+    // ⚠️ 必须深合并：浅合并（{...a, ...b}）会让「只传部分字段」的请求把整个嵌套对象替换掉 ——
+    //    比如 {"sedentary":{"intervalMin":60}} 会丢失 texts / awayResetMin / snoozeMin。
+    const merged = deepMerge(userCfg, incoming);
+    merged.port = userCfg.port;
+    // 最低限度校验：设置页输入框的 min/max 只约束 spinner，JS 直接读 .value 拦不住手输的负数。
+    // pet.size 越界最要命 —— 渲染进程会按负尺寸建窗，直接失败。其余数值在 reminders.mjs
+    // 里有 Math.max 兜底，这里只守这一处。
+    if (merged.pet && typeof merged.pet === 'object') {
+      const sz = Math.round(Number(merged.pet.size));
+      merged.pet = { ...merged.pet, size: Number.isFinite(sz) ? Math.min(900, Math.max(80, sz)) : 462 };
+    }
     saveUserConfig(merged);
     const oldKey = apiKeyInfo.key;
     userCfg = merged;

@@ -506,7 +506,13 @@ async function refreshBalance() {
   try {
     const b = await api('/dsh-pet-7340/balance');
     if (b.ok) {
-      $('balance').innerHTML = b.data.total + '<small>' + b.data.currency + '</small>';
+      // 不拼 innerHTML：余额和币种是**外部 API 返回值**，理论上可能带标签。
+      // 顺便规避 currency 里出现奇怪字符把结构撑坏。
+      const box = $('balance');
+      box.textContent = b.data.total;
+      const unit = document.createElement('small');
+      unit.textContent = b.data.currency;
+      box.appendChild(unit);
     } else {
       $('balance').innerHTML = '<span style="font-size:15px;color:var(--ink-3)">' +
         (b.reason === 'credential-missing' ? '未配置密钥' : '暂时读不到：' + (b.message || b.reason)) + '</span>';

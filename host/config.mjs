@@ -111,7 +111,7 @@ export const DEFAULT_USER_CONFIG = {
 };
 
 /** 深合并：对象递归，数组与标量整体替换（用户配置优先） */
-function deepMerge(base, override) {
+export function deepMerge(base, override) {
   if (override === undefined || override === null) return base;
   if (Array.isArray(override) || typeof override !== 'object') return override;
   if (typeof base !== 'object' || base === null || Array.isArray(base)) return override;
