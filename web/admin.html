@@ -290,7 +290,7 @@
     <div class="field">
       <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
         <label style="margin:0">曲目</label>
-        <button class="ghost" id="btn-pl-dedupe" style="padding:4px 10px;font-size:12px">清理重复</button>
+        <button class="ghost" id="btn-pl-dedupe" style="padding:4px 10px;font-size:12px">清理重复与失效</button>
       </div>
       <div id="pl-tracks" class="reminder-wrap"></div>
     </div>
@@ -1026,14 +1026,39 @@ $('btn-pl-dedupe').onclick = async () => {
     seen.add(k);
     keep.add(t);
   }
-  const removedCount = l.tracks.length - keep.size;
-  const deadLeft = l.tracks.filter((t) => !keep.has(t) && !t.missing).length;
-  l.tracks = l.tracks.filter((t) => keep.has(t));
+  // ① 去重：每条保留文件还在的那份
+  const before = l.tracks.length;
+  let tracks = l.tracks.filter((t) => keep.has(t));
+  const dupCount = before - tracks.length;
+
+  // ② 剩下的失效项（文件已移走、又没有有效替代）也清掉 —— 留着也播不了。
+  //    删之前问一句，避免误清后还要重新扫描。
+  const dead = tracks.filter((t) => t.missing);
+  let deadCount = 0;
+  if (dead.length) {
+    const ok = confirm(
+      '还有 ' + dead.length + ' 首的文件已被移走（播不了），一并移除吗？\n\n' +
+        '移除后如需恢复，重新扫描添加即可。',
+    );
+    if (ok) {
+      tracks = tracks.filter((t) => !t.missing);
+      deadCount = dead.length;
+    }
+  }
+
+  l.tracks = tracks;
   plRender();
   await plSave();
-  $('pl-hint').textContent = removedCount
-    ? '去掉 ' + removedCount + ' 条重复' + (deadLeft ? '（每条都保留了文件存在的那份）' : '')
-    : '没有发现重复';
+  if (!dupCount && !deadCount) {
+    $('pl-hint').textContent = '没有需要清理的';
+  } else {
+    $('pl-hint').textContent =
+      '已清理：' +
+      (dupCount ? '重复 ' + dupCount + ' 条' : '') +
+      (dupCount && deadCount ? '、' : '') +
+      (deadCount ? '失效 ' + deadCount + ' 条' : '') +
+      (dead.length && !deadCount ? '（' + dead.length + ' 条失效项已保留）' : '');
+  }
 };
 
 $('btn-pl-scan').onclick = async () => {
