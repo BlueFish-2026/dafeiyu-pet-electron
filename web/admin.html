@@ -726,7 +726,9 @@ function plRenderTracks() {
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f0f0f0';
     const txt = document.createElement('div');
     txt.style.cssText = 'flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    txt.textContent = i + 1 + '. ' + t.name;
+    // missing：宿主已经 stat 过，路径失效。标灰 + 说明，免得用户疑惑"这首怎么放不了"
+    txt.textContent = i + 1 + '. ' + t.name + (t.missing ? '   （文件已移走）' : '');
+    if (t.missing) txt.style.color = '#9ca3af';
     const del = document.createElement('button');
     del.className = 'icon-btn';
     del.textContent = '×';
@@ -935,23 +937,28 @@ function plRenderScan() {
     }
     if (!l.tracks) l.tracks = [];
     const havePath = new Set(l.tracks.map((t) => t.path));
-    const haveName = new Set(l.tracks.map((t) => trackKey(t.name)));
     let added = 0;
+    let repaired = 0;
     for (const f of picked) {
       const k = trackKey(f.name);
-      // 路径相同 或 歌名相同 → 视为已有。
-      // 后者是为了挡住「同一首歌在磁盘上有好几份副本、路径不同」的情况。
-      if (havePath.has(f.path) || haveName.has(k)) continue;
+      if (havePath.has(f.path)) continue; // 同一个文件已经在歌单里
+      // 同名旧记录：可能是整理音乐目录后残留的**失效路径**（死链）。
+      // 直接清掉换成这次选中的路径 —— 既去重，又顺手把死链修好。
+      const before = l.tracks.length;
+      l.tracks = l.tracks.filter((t) => trackKey(t.name) !== k);
+      if (before !== l.tracks.length) repaired++;
       l.tracks.push({ path: f.path, name: f.name });
       havePath.add(f.path);
-      haveName.add(k);
       added++;
     }
     wrap.style.display = 'none';
     plScan = { dir: '', files: [] };
     plRender();
     await plSave();
-    $('pl-hint').textContent = '加入 ' + added + ' 首（跳过重复 ' + (picked.length - added) + ' 首）';
+    $('pl-hint').textContent =
+      '加入 ' + added + ' 首' +
+      (repaired ? '（其中 ' + repaired + ' 首替换了失效的旧路径）' : '') +
+      (picked.length > added ? '，跳过 ' + (picked.length - added) + ' 首已在歌单的' : '');
   };
   foot.appendChild(btn);
   box.appendChild(foot);
@@ -1006,21 +1013,26 @@ $('btn-pl-del').onclick = async () => {
 $('btn-pl-dedupe').onclick = async () => {
   const l = plCurrent();
   if (!l || !(l.tracks || []).length) return;
+  // 同名多条时**优先保留文件还在的那条**：先排序让「存在的」排前面，
+  // 再按歌名保留第一条。否则会把能播的那条删掉、只剩失效死链。
+  const ordered = l.tracks
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => (a.t.missing ? 1 : 0) - (b.t.missing ? 1 : 0) || a.i - b.i);
   const seen = new Set();
-  const removed = [];
-  l.tracks = l.tracks.filter((t) => {
+  const keep = new Set();
+  for (const { t } of ordered) {
     const k = trackKey(t.name);
-    if (seen.has(k)) {
-      removed.push(t.name);
-      return false;
-    }
+    if (seen.has(k)) continue;
     seen.add(k);
-    return true;
-  });
+    keep.add(t);
+  }
+  const removedCount = l.tracks.length - keep.size;
+  const deadLeft = l.tracks.filter((t) => !keep.has(t) && !t.missing).length;
+  l.tracks = l.tracks.filter((t) => keep.has(t));
   plRender();
   await plSave();
-  $('pl-hint').textContent = removed.length
-    ? '已去掉 ' + removed.length + ' 首重复（每首保留第一条）'
+  $('pl-hint').textContent = removedCount
+    ? '去掉 ' + removedCount + ' 条重复' + (deadLeft ? '（每条都保留了文件存在的那份）' : '')
     : '没有发现重复';
 };
 

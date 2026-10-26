@@ -888,9 +888,15 @@ async function handleApi(path, req, res, url) {
   }
 
   // ---------- 歌单（设置页「音乐」卡片） ----------
-  // 设置页要编辑曲目，所以这里返回**完整**歌单（含 tracks），不是摘要
+  // 设置页要编辑曲目，所以这里返回**完整**歌单（含 tracks），不是摘要。
+  // 额外标 missing：用户整理过音乐目录后，歌单里会残留旧路径（死链），
+  // 去重/清理时必须优先保留还能用的那条，否则会把能播的删掉。
   if (action === 'music/playlists' && req.method === 'GET') {
-    return sendJson(res, 200, { ok: true, active: playlists.active, lists: playlists.lists });
+    const lists = playlists.lists.map((l) => ({
+      ...l,
+      tracks: l.tracks.map((t) => ({ ...t, missing: !existsSync(t.path) })),
+    }));
+    return sendJson(res, 200, { ok: true, active: playlists.active, lists });
   }
 
   // 整份覆盖式保存：设置页拿到全量 → 改完 → 提交，逻辑最简单，不用做增量 diff
@@ -1007,8 +1013,12 @@ async function handleApi(path, req, res, url) {
     const files = scanAudioDir(dir);
     // 标出「已经在当前歌单里」的：设置页默认不勾，避免反复把同一批歌再加一遍
     const cur = activeList();
-    const haveNames = new Set(cur ? cur.tracks.map((t) => trackKey(t.name)) : []);
-    const already = files.filter((f) => haveNames.has(trackKey(f.name))).length;
+    // 只把「同名**且文件还在**」算作已在歌单。
+    // 同名的死链（用户整理目录后残留）不算 —— 允许重新加入，顺带把失效路径换成新的。
+    const aliveNames = new Set(
+      (cur ? cur.tracks : []).filter((t) => existsSync(t.path)).map((t) => trackKey(t.name)),
+    );
+    const already = files.filter((f) => aliveNames.has(trackKey(f.name))).length;
     log(`扫描音乐文件夹：${dir}（${files.length} 首，其中 ${already} 首已在歌单）`);
     return sendJson(res, 200, {
       ok: true,
@@ -1020,7 +1030,7 @@ async function handleApi(path, req, res, url) {
         // 按**歌名**判重，不只按路径：用户磁盘上常有同一文件的多个副本
         // （如 音乐\孙燕姿\xx.flac 与 音乐\xx - 孙燕姿\xx.flac 并存），
         // 只比路径会全部放过去，歌单里同一首歌出现好几次。
-        inList: haveNames.has(trackKey(f.name)),
+        inList: aliveNames.has(trackKey(f.name)),
       })),
     });
   }
