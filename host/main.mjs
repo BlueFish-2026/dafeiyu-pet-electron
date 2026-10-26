@@ -410,6 +410,15 @@ function savePlaylists() {
   }
 }
 
+/**
+ * 歌名归一化，用于判断「是不是同一首歌」—— 与文件路径无关。
+ * 典型场景：同一首歌在 音乐\孙燕姿\ 和 音乐\xx - 孙燕姿\ 下各有一份，
+ * 路径不同但绝对是同一首，歌单里不该出现两次。
+ */
+function trackKey(name) {
+  return String(name || '').trim().toLowerCase();
+}
+
 /** 扫某个目录下的可播音频（递归；按曲名排序） */
 function scanAudioDir(dir) {
   const out = [];
@@ -998,13 +1007,21 @@ async function handleApi(path, req, res, url) {
     const files = scanAudioDir(dir);
     // 标出「已经在当前歌单里」的：设置页默认不勾，避免反复把同一批歌再加一遍
     const cur = activeList();
-    const have = new Set(cur ? cur.tracks.map((t) => t.path) : []);
-    const already = files.filter((f) => have.has(f.path)).length;
+    const haveNames = new Set(cur ? cur.tracks.map((t) => trackKey(t.name)) : []);
+    const already = files.filter((f) => haveNames.has(trackKey(f.name))).length;
     log(`扫描音乐文件夹：${dir}（${files.length} 首，其中 ${already} 首已在歌单）`);
     return sendJson(res, 200, {
       ok: true,
       dir,
-      files: files.map((f) => ({ path: f.path, name: f.name, lrc: f.lrc, inList: have.has(f.path) })),
+      files: files.map((f) => ({
+        path: f.path,
+        name: f.name,
+        lrc: f.lrc,
+        // 按**歌名**判重，不只按路径：用户磁盘上常有同一文件的多个副本
+        // （如 音乐\孙燕姿\xx.flac 与 音乐\xx - 孙燕姿\xx.flac 并存），
+        // 只比路径会全部放过去，歌单里同一首歌出现好几次。
+        inList: haveNames.has(trackKey(f.name)),
+      })),
     });
   }
 

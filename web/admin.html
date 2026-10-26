@@ -288,7 +288,10 @@
     </div>
 
     <div class="field">
-      <label>曲目</label>
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <label style="margin:0">曲目</label>
+        <button class="ghost" id="btn-pl-dedupe" style="padding:4px 10px;font-size:12px">清理重复</button>
+      </div>
       <div id="pl-tracks" class="reminder-wrap"></div>
     </div>
 
@@ -753,6 +756,11 @@ async function plSave() {
   }
 }
 
+/** 歌名归一化（与宿主 trackKey 同规则）：判断「是不是同一首歌」，与文件路径无关 */
+function trackKey(name) {
+  return String(name || '').trim().toLowerCase();
+}
+
 function plSingerOf(name) {
   // 文件名约定「歌名 - 歌手」（下载来的基本都是这格式）；解析不出就返回空
   const parts = String(name).split(' - ');
@@ -926,12 +934,17 @@ function plRenderScan() {
       return;
     }
     if (!l.tracks) l.tracks = [];
-    const have = new Set(l.tracks.map((t) => t.path));
+    const havePath = new Set(l.tracks.map((t) => t.path));
+    const haveName = new Set(l.tracks.map((t) => trackKey(t.name)));
     let added = 0;
     for (const f of picked) {
-      if (have.has(f.path)) continue;
+      const k = trackKey(f.name);
+      // 路径相同 或 歌名相同 → 视为已有。
+      // 后者是为了挡住「同一首歌在磁盘上有好几份副本、路径不同」的情况。
+      if (havePath.has(f.path) || haveName.has(k)) continue;
       l.tracks.push({ path: f.path, name: f.name });
-      have.add(f.path);
+      havePath.add(f.path);
+      haveName.add(k);
       added++;
     }
     wrap.style.display = 'none';
@@ -987,6 +1000,28 @@ $('btn-pl-del').onclick = async () => {
   plState.active = plState.lists[0] ? plState.lists[0].id : '';
   plRender();
   await plSave();
+};
+
+// 清理重复：按歌名去重，保留第一个。只动歌单，不碰文件。
+$('btn-pl-dedupe').onclick = async () => {
+  const l = plCurrent();
+  if (!l || !(l.tracks || []).length) return;
+  const seen = new Set();
+  const removed = [];
+  l.tracks = l.tracks.filter((t) => {
+    const k = trackKey(t.name);
+    if (seen.has(k)) {
+      removed.push(t.name);
+      return false;
+    }
+    seen.add(k);
+    return true;
+  });
+  plRender();
+  await plSave();
+  $('pl-hint').textContent = removed.length
+    ? '已去掉 ' + removed.length + ' 首重复（每首保留第一条）'
+    : '没有发现重复';
 };
 
 $('btn-pl-scan').onclick = async () => {
