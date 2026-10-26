@@ -21,7 +21,8 @@
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    padding: 32px 20px 80px;
+    /* 底部留白要够高：保存条是 sticky 的，滚动时会浮在内容上方 */
+    padding: 32px 20px 130px;
     font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
     color: var(--ink);
     background:
@@ -31,6 +32,36 @@
     min-height: 100vh;
   }
   .wrap { max-width: 780px; margin: 0 auto; }
+
+  /* ---- 标签导航：设置项变多后，一屏只显示一个主题，不用一路往下滚 ---- */
+  .tabs {
+    display: flex; gap: 4px; margin: 0 0 18px; padding: 5px;
+    background: rgba(255, 255, 255, 0.78); border: 1px solid var(--line);
+    border-radius: 14px; backdrop-filter: blur(8px);
+  }
+  .tab {
+    flex: 1; border: 0; background: transparent; padding: 9px 10px;
+    border-radius: 10px; font-size: 13.5px; font-family: inherit;
+    color: var(--ink-2); cursor: pointer; transition: background 0.15s, color 0.15s;
+  }
+  .tab:hover { color: var(--ink); background: rgba(15, 23, 42, 0.04); }
+  .tab.is-on {
+    background: var(--sky); color: #fff; font-weight: 600;
+    box-shadow: 0 2px 8px rgba(14, 165, 233, 0.28);
+  }
+  /* 分面板：只有当前主题的卡片可见 */
+  .card[data-panel] { display: none; }
+  .card[data-panel].is-on { display: block; }
+
+  /* 曲目列表限高：46 首不再把页面撑到几千像素 */
+  #pl-tracks { max-height: 340px; overflow-y: auto; padding-right: 4px; }
+
+  /* 底部保存条：切到哪个标签都能直接点 */
+  .actions.sticky-actions {
+    position: sticky; bottom: 0; z-index: 9;
+    background: linear-gradient(to top, #f8fafc 62%, rgba(248, 250, 252, 0));
+    padding: 14px 0 6px;
+  }
 
   header { margin-bottom: 26px; }
   h1 { margin: 0 0 8px; font-size: 25px; font-weight: 650; letter-spacing: -0.02em; }
@@ -164,7 +195,15 @@
     <div id="status"></div>
   </header>
 
-  <div class="card">
+  <!-- 标签导航：设置项多了以后一屏一主题，避免无限下滚 -->
+  <nav class="tabs" id="tabs">
+    <button class="tab is-on" data-tab="remind">提醒</button>
+    <button class="tab" data-tab="look">外观</button>
+    <button class="tab" data-tab="music">音乐</button>
+    <button class="tab" data-tab="account">账户与更新</button>
+  </nav>
+
+  <div class="card" data-panel="account">
     <h2><span class="ico">¥</span>余额</h2>
     <p class="hint">从 DeepSeek 官方接口读取，宠物头顶会按余额多少播不同动画。</p>
     <div class="balance-big" id="balance">—</div>
@@ -182,7 +221,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card is-on" data-panel="remind">
     <h2><span class="ico">⏱</span>久坐提醒</h2>
     <p class="hint">连续用电脑满设定时长就提醒一次。中途离开（无键鼠操作）超过设定时长会算作休息，重新计时。</p>
     <div class="switch">
@@ -209,7 +248,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card is-on" data-panel="remind">
     <h2><span class="ico">🔔</span>定时提醒</h2>
     <p class="hint">到点宠物会播动画、弹气泡，并推一条系统通知。</p>
     <div class="switch">
@@ -223,7 +262,7 @@
     <button class="ghost" id="btn-add" style="margin-top:6px">+ 添加一条</button>
   </div>
 
-  <div class="card">
+  <div class="card" data-panel="look">
     <h2><span class="ico">🐟</span>外观与通知</h2>
     <div class="row" style="margin-top:4px">
       <div class="field">
@@ -254,7 +293,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-panel="music">
     <h2><span class="ico">🎵</span>音乐与歌单</h2>
     <p class="hint-mini">
       歌单在宠物右键菜单「音乐」里播放。想加歌：扫描任意文件夹挑歌加入，或直接把文件丢进「音乐」文件夹。
@@ -300,7 +339,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-panel="account">
     <h2><span class="ico">⬆</span>软件更新</h2>
     <p class="hint">内置自动更新：宠物自己联网从 GitHub 只拉改动的小文件（几百 KB），不用重装整个程序。</p>
     <div class="row" style="margin-top:4px">
@@ -319,7 +358,7 @@
     </div>
   </div>
 
-  <div class="actions">
+  <div class="actions sticky-actions">
     <button class="primary" id="btn-save">保存</button>
     <button class="ghost" id="btn-test-sed">试一下久坐提醒</button>
     <button class="ghost" id="btn-test-sch">试一下定时提醒</button>
@@ -333,6 +372,35 @@ let cfg = null;
 let state = null;
 
 const $ = (id) => document.getElementById(id);
+
+// ---- 标签页：一屏一主题，并记住上次停在哪 ----
+const TAB_KEY = 'dshPetAdminTab';
+function applyTab(name) {
+  const target = document.querySelector('.tab[data-tab="' + name + '"]') ? name : 'remind';
+  document.querySelectorAll('.card[data-panel]').forEach((c) => {
+    c.classList.toggle('is-on', c.dataset.panel === target);
+  });
+  document.querySelectorAll('.tab').forEach((b) => {
+    b.classList.toggle('is-on', b.dataset.tab === target);
+  });
+  try {
+    localStorage.setItem(TAB_KEY, target);
+  } catch {
+    /* 隐私模式禁写，忽略 */
+  }
+}
+document.querySelectorAll('.tab').forEach((b) => {
+  b.onclick = () => applyTab(b.dataset.tab);
+});
+// localStorage 在 file:// 或隐私模式可能直接抛 SecurityError —— 不包起来会让整段
+// 脚本中断，而所有卡片默认 display:none，结果就是整页白屏。
+let initialTab = 'remind';
+try {
+  initialTab = localStorage.getItem(TAB_KEY) || 'remind';
+} catch {
+  /* 用默认标签 */
+}
+applyTab(initialTab);
 
 function toast(msg) {
   const t = $('toast');
