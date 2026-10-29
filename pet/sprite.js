@@ -140,6 +140,8 @@ class PetSprite {
     this.musicLyricSeq = 0; // 防竞态：快速切歌时丢弃过期的歌词响应
     this.musicMaxTracks = 30; // 菜单里最多列几首（宿主下发）
     this.musicAnimName = ''; // 上一首用的播放动画（auto 轮换时避开它）
+    this.audioDeviceWatched = false; // 是否已挂上音频设备变化监听
+    this.onAudioDeviceChange = null; // 存引用，dispose 时才能解绑
 
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
     this.el = document.createElement('div');
@@ -280,6 +282,16 @@ class PetSprite {
       this.musicEl = null;
     }
     this.musicPlaying = false;
+    // 解绑音频设备监听，避免宠物销毁后还留着闭包
+    if (this.onAudioDeviceChange && navigator.mediaDevices) {
+      try {
+        navigator.mediaDevices.removeEventListener('devicechange', this.onAudioDeviceChange);
+      } catch {
+        /* ignore */
+      }
+      this.onAudioDeviceChange = null;
+      this.audioDeviceWatched = false;
+    }
     if (this.chatClose) {
       this.chatClose();
       this.chatClose = null;
@@ -1588,8 +1600,37 @@ class PetSprite {
       }
       void this.musicNext('跳过坏文件');
     });
+    this.watchAudioDevice();
     this.musicEl = a;
     return a;
+  }
+
+  /**
+   * 监听音频输出设备变化：拔耳机 / 蓝牙断开 / 切换输出设备时**立即暂停**。
+   *
+   * 为什么不等判断完再停：设备切换后声音会立刻从新设备（通常是扬声器）出来，
+   * 任何延迟都可能让半秒钟的歌喷到办公室。所以听到事件先停，宁可误停。
+   * 代价是「主动插入耳机」也会停一下，点继续即可 —— 比外放强。
+   */
+  watchAudioDevice() {
+    if (this.audioDeviceWatched) return;
+    const md = navigator.mediaDevices;
+    if (!md || typeof md.addEventListener !== 'function') return;
+    this.audioDeviceWatched = true;
+
+    this.onAudioDeviceChange = () => {
+      if (!this.musicPlaying) return; // 没在放就不用管
+      if (this.pet && this.pet.musicPauseOnDeviceChange === false) return;
+      try {
+        if (this.musicEl) this.musicEl.pause();
+      } catch {
+        /* 已经停了 */
+      }
+      this.musicPlaying = false;
+      this.musicAnimStop();
+      this.showMusicBubble('音频设备变动，已暂停播放', 4200);
+    };
+    md.addEventListener('devicechange', this.onAudioDeviceChange);
   }
 
   /**

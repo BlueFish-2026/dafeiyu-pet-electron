@@ -72,6 +72,11 @@ export const DEFAULT_USER_CONFIG = {
      */
     lyricFetch: true,
     /**
+     * 音频输出设备变化（拔耳机 / 蓝牙断开）时是否自动暂停播放。
+     * 开着是为了防止「耳机断了，声音突然从扬声器喷出来」。
+     */
+    pauseOnDeviceChange: true,
+    /**
      * 播放时播哪段动画：
      *   'auto'  在「悠闲哼歌 / 轻快摇摆舞 / 可爱宅舞 / 优雅女仆舞」里轮换（每次切歌换一个）
      *   具体名   固定播那一段
@@ -223,6 +228,8 @@ export function buildPetConfig(userCfg) {
         musicAnim: String(userCfg.music?.anim ?? 'auto'),
         // 本地没歌词时，是否允许自动去 Lrclib 匹配（命中会缓存成本地 .lrc）
         musicLyricFetch: userCfg.music?.lyricFetch !== false,
+        // 音频设备变化时是否自动暂停（防外放）
+        musicPauseOnDeviceChange: userCfg.music?.pauseOnDeviceChange !== false,
         corner: userCfg.pet.corner,
         position: {
           corner: userCfg.pet.corner,
