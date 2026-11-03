@@ -737,8 +737,10 @@ function mountContextMenu(opts) {
 		panel.style.left = "";
 		panel.style.top = "";
 		panel.style.display = "block";
-		let left = rect.right + 4;
-		if (left + panel.offsetWidth > c.x + c.w - 4) left = rect.left - panel.offsetWidth - 4;
+		// 父项与子面板之间的缝隙 4px → 2px：鼠标移进子面板必须穿过这条缝，
+		// 缝隙越宽穿得越久，越容易踩中下面的关闭定时器（三级菜单尤其明显）。
+		let left = rect.right + 2;
+		if (left + panel.offsetWidth > c.x + c.w - 4) left = rect.left - panel.offsetWidth - 2;
 		left = Math.max(c.x + 4, left);
 		let top = rect.top;
 		if (top + panel.offsetHeight > c.y + c.h - 4) top = Math.max(c.y + 4, c.y + c.h - 4 - panel.offsetHeight);
@@ -801,7 +803,7 @@ function mountContextMenu(opts) {
 		leaveTimer = window.setTimeout(() => {
 			leaveTimer = null;
 			close();
-		}, 200);
+		}, 500);
 	});
 	root.addEventListener("mouseover", () => {
 		if (leaveTimer !== null) {

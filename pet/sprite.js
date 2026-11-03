@@ -1193,11 +1193,14 @@ class PetSprite {
       // 宿主 /whisper 与 /chat 恒返回 {ok:false, reason:'unsupported'}（见 host/main.mjs）。
       // 留着只会让用户点了以为坏了，所以直接从菜单移除。
       { label: '回到初始位置', action: 'home' },
+      // 主菜单只留「调整大小」，当前值挪进子菜单 —— 原来把数值塞在主菜单标题里，
+      // 这一项比其他项长一截，是"看着乱"的主要来源之一。
       {
-        label: '调整大小（现在 ' + Math.round(Number(this.pet.size) || 462) + '）',
+        label: '调整大小',
         children: [
-          { label: '小一点', action: 'size-down' },
-          { label: '大一点', action: 'size-up' },
+          { label: '当前 ' + Math.round(Number(this.pet.size) || 462) + '（步长 40）', action: 'noop' },
+          { label: '小一点（-40）', action: 'size-down' },
+          { label: '大一点（+40）', action: 'size-up' },
           { label: '恢复默认（462）', action: 'size-reset' },
         ],
       },
@@ -1222,29 +1225,16 @@ class PetSprite {
           })),
         ],
       },
-      {
-        label: '提示开关',
-        children: [
-          {
-            label: (this.pet.scheduleEnabled !== false ? '● ' : '○ ') + '定时提醒',
-            action: 'tg-schedule',
-          },
-          {
-            label: (this.pet.balanceEnabled ? '● ' : '○ ') + '显示余额',
-            action: 'tg-balance',
-          },
-          {
-            label: (this.pet.notifyEnabled ? '● ' : '○ ') + '系统通知',
-            action: 'tg-notify',
-          },
-        ],
-      },
-      // 不再单列「详细设置…」：它与菜单首项「打开设置页」去处完全相同（都是 /admin），
-      // 留着纯属重复。首项既是设置入口，也在菜单最上面，够用了。
+      // 「提示开关」（定时提醒 / 显示余额 / 系统通知）已移入网页设置页：
+      // 定时提醒 → 「提醒」标签；显示余额 → 「账户与更新」标签；系统通知 → 「外观」标签。
+      // 右键菜单不再重复这三个开关。
+      // 不再单列「详细设置…」：它与菜单首项「打开设置页」去处完全相同（都是 /admin）。
+    );
+    // 「动作」夹在普通操作与危险操作之间；重启/退出永远排最后。
+    const tree = tools.concat(S.buildMenuTree(this.animations), [
       { label: '重启大肥鱼', action: 'restart' },
       { label: '退出大肥鱼', action: 'quit' },
-    );
-    const tree = tools.concat(S.buildMenuTree(this.animations));
+    ]);
     if (!tree.length) return;
     this.menuOpen = true;
     this.setInteractive(true); // 菜单是窗口内 DOM：悬停期间整窗保持可交互，关闭后恢复命中区穿透
@@ -1374,9 +1364,8 @@ class PetSprite {
     if (leaf.action && leaf.action.indexOf('tg-') === 0) {
       const KEYMAP = {
         'tg-sedentary': 'sedentary',
-        'tg-schedule': 'schedule',
-        'tg-balance': 'balance',
-        'tg-notify': 'notify',
+        // schedule / balance / notify 三个开关已移入设置页，右键入口与这里的映射一并删除。
+        // 宿主 /api/pet-toggle 仍保留这几个 key（通用窄接口，探针脚本 verify_dismiss_linkage 在用）。
       };
       const KEY = KEYMAP[leaf.action];
       if (KEY) {
@@ -1443,8 +1432,11 @@ class PetSprite {
       const MAX = 900;
       const cur = Math.round(Number(this.pet.size) || DEF);
       let next = DEF;
-      if (leaf.action === 'size-down') next = Math.max(MIN, Math.round((cur * 0.85) / 5) * 5);
-      else if (leaf.action === 'size-up') next = Math.min(MAX, Math.round((cur * 1.15) / 5) * 5);
+      // 固定步进，不用百分比：按 ×1.15 每次增幅都不一样（300→345→400→460→530），
+      // 实际观感像"数值乱跳"。固定 40 步长线性增长，肉眼可预期。
+      const STEP = 40;
+      if (leaf.action === 'size-down') next = Math.max(MIN, cur - STEP);
+      else if (leaf.action === 'size-up') next = Math.min(MAX, cur + STEP);
       if (next === cur) return;
       try {
         fetch(ORIGIN + '/api/pet-size?size=' + next, { method: 'POST', cache: 'no-store' }).catch(
