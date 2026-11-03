@@ -1283,6 +1283,26 @@ $('btn-pl-ren-stop').onclick = () => {
   $('pl-ren-wrap').style.display = 'none'; // 跑完了这个按钮就是「关闭」
 };
 
+// 歌词库里同一首歌的其他版本 —— 只在"文件名已写歌手"时才查得到。
+// 用于提醒：歌手可能标错了（整串搜索永远只会返回文件名里那个歌手，看不到别人）。
+function othersNote(r) {
+  if (r.suspect) {
+    return (
+      '\n     ⚠️ 歌词库里「' + r.suspect.artist + '」版本（' + r.suspect.duration + 's、带歌词）时长接近' +
+      '，文件名里的歌手可能标错了'
+    );
+  }
+  if (r.others && r.others.length) {
+    return (
+      '\n     歌词库还有：' +
+      r.others
+        .map((o) => o.artist + '（' + o.duration + 's' + (o.hasLyric ? '、带歌词' : '') + '）')
+        .join('、')
+    );
+  }
+  return '';
+}
+
 $('btn-pl-rename-file').onclick = async () => {
   if (renRunning) return;
   const l = plCurrent();
@@ -1366,7 +1386,7 @@ $('btn-pl-rename-file').onclick = async () => {
     }
     down = 0;
     if (r.unchanged) {
-      renLog('⏭ ' + r.current + '　已经是标准名', 'skip');
+      renLog('⏭ ' + r.current + '　已经是标准名' + othersNote(r), r.suspect ? 'warn' : 'skip');
       already++;
       continue;
     }
@@ -1392,7 +1412,8 @@ $('btn-pl-rename-file').onclick = async () => {
         renLog(
           (low ? '⚠️ ' : '✅ ') + d0.old + '\n     → ' + d0.name +
             (d0.lrc ? '（歌词一起改了）' : '') +
-            (low ? '\n     ' + (r.why || '按原唱补全，请核对') : ''),
+            (low ? '\n     ' + (r.why || '按原唱补全，请核对') : '') +
+            othersNote(r),
           low ? 'warn' : 'ok',
         );
         changed++;

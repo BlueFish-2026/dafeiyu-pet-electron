@@ -698,9 +698,25 @@ async function fetchMetaFromLrclib(trackName, durationSec) {
       if (!track || !artist) continue;
       const tn = normForMatch(track);
       const an = normForMatch(artist);
-      let score = 0;
-      const trackOk = !!(tn && qn.includes(tn));
+      // 歌名是否被文件名的某一段解释（互为包含，不只是"文件名包含歌名"）：
+      //   文件名「太阳与地球」vs 歌词库「太阳与地球 (Sun & Earth)」—— 后者更长，反向包含也要认。
+      // 顺带记下命中的那一段，出 proposed 时优先沿用它：用户自己的写法更简洁，
+      // 不该因为歌词库多了个英文副标题就把名字改长。
+      let trackOk = false;
+      let segForTrack = '';
+      if (tn) {
+        for (const seg of rawSegs) {
+          const sn = normForMatch(seg);
+          if (!sn) continue;
+          if (sn.includes(tn) || tn.includes(sn)) {
+            trackOk = true;
+            segForTrack = seg;
+            break;
+          }
+        }
+      }
       const artistOk = !!(an && qn.includes(an));
+      let score = 0;
       if (trackOk) score += 2;
       if (artistOk) score += 2;
       // 一个字都没对上 → 不是同一首，直接丢
@@ -735,6 +751,8 @@ async function fetchMetaFromLrclib(trackName, durationSec) {
         artistOk,
         artistPartial,
         badSegs,
+        segForTrack,
+        hasLyric: !!(x.syncedLyrics && String(x.syncedLyrics).trim()),
       });
     }
     if (scored.length) {
@@ -744,6 +762,53 @@ async function fetchMetaFromLrclib(trackName, durationSec) {
     }
   }
   return null;
+}
+
+/** 歌名 → 其他版本列表的缓存（同一次运行内不重复查） */
+const otherVersionCache = new Map();
+
+/**
+ * 用**歌名**单独搜一次，看歌词库里还有哪些歌手唱过这首歌。
+ *
+ * 为什么必须单独搜：Lrclib 是 AND 匹配。把「暗号 - 李泓伸」整串丢过去，
+ * **只会返回李泓伸那一条**，周杰伦的版本压根不出现。于是我用"文件名里的歌手"
+ * 去验证"搜到的歌手"，永远自洽 —— 文件名标错了也看不出来。
+ * 这里换成只搜歌名，才能看到全量候选。
+ *
+ * @returns {Promise<Array<{artist:string,duration:number,hasLyric:boolean}>>}
+ */
+async function findOtherVersions(trackName, excludeArtist) {
+  const key = normForMatch(trackName);
+  if (!key) return [];
+  if (otherVersionCache.has(key)) return otherVersionCache.get(key);
+
+  let list = [];
+  try {
+    list = await lrclibSearch(trackName);
+  } catch {
+    return []; // 查不到就算了，不影响主流程
+  }
+
+  const ex = normForMatch(excludeArtist);
+  const out = [];
+  const seen = new Set();
+  for (const x of list) {
+    const t = String(x?.trackName || '').trim();
+    const a = String(x?.artistName || '').trim();
+    if (!t || !a) continue;
+    if (normForMatch(t) !== key) continue; // 歌名必须完全一致，别把别的歌混进来
+    const an = normForMatch(a);
+    if (!an || an === ex || seen.has(an)) continue;
+    seen.add(an);
+    out.push({
+      artist: a,
+      duration: Math.round(Number(x.duration || 0)),
+      hasLyric: !!(x.syncedLyrics && String(x.syncedLyrics).trim()),
+    });
+    if (out.length >= 3) break;
+  }
+  otherVersionCache.set(key, out);
+  return out;
 }
 
 /** 「歌名 - 歌手」→ 合法文件名（不含扩展名）。Windows 非法字符换下划线 */
@@ -1226,7 +1291,13 @@ async function handleApi(path, req, res, url) {
     try {
       const hit = await fetchMetaFromLrclib(fileBase, dur);
       if (!hit) return sendJson(res, 200, { ok: false, reason: 'not-found', current: fileBase });
-      const proposed = sanitizeBaseName(hit.track + ' - ' + hit.artist);
+      // 出 proposed 时优先沿用它文件里原有的歌名写法（见 fetchMetaFromLrclib 里的 segForTrack）：
+      // 「太阳与地球」不该被改成「太阳与地球 (Sun & Earth)」。
+      const trackOut =
+        hit.segForTrack && normForMatch(hit.segForTrack) !== normForMatch(hit.artist)
+          ? hit.segForTrack
+          : hit.track;
+      const proposed = sanitizeBaseName(trackOut + ' - ' + hit.artist);
       const unchanged = normForMatch(proposed) === normForMatch(fileBase);
 
       // ---- 是否可信，由宿主判定（前端只负责照着执行，不再自己猜）----
@@ -1246,10 +1317,27 @@ async function handleApi(path, req, res, url) {
         why = '文件名里的「' + badSegs[0] + '」对不上歌词库，可能是 remix/翻唱版本';
       } else if (!hit.trackOk) {
         verdict = 'skip';
-        why = '歌名对不上，可能不是同一首';
+        why = '歌词库里找不到这首歌（搜到的候选歌名都对不上），保留原名';
       } else if (!hit.artistOk && !hit.artistPartial) {
         verdict = 'low';
         why = '原文件名没有歌手，按原唱补全（如是翻唱请核对）';
+      }
+
+      // 文件名里**已经写了歌手**时，再按歌名搜一次，看库里还有没有别的歌手。
+      // 这是唯一能跳出"自己验证自己"的办法：整串搜只会返回同名歌手那一条。
+      let others = [];
+      if (hit.artistOk) {
+        others = await findOtherVersions(hit.track, hit.artist);
+      }
+      // 选中的那条没有同步歌词、却有别的歌手版本「时长接近 + 带同步歌词」——
+      // 说明那个版本才是大家真正在用的，文件名里的歌手很可能标错了。
+      // 只提示，不自动改（用户明确要求"别瞎改"）。
+      let suspect = null;
+      if (!hit.hasLyric) {
+        suspect =
+          others.find(
+            (o) => o.hasLyric && o.duration > 0 && hit.duration > 0 && Math.abs(o.duration - hit.duration) <= 5,
+          ) || null;
       }
 
       return sendJson(res, 200, {
@@ -1264,6 +1352,8 @@ async function handleApi(path, req, res, url) {
         why,
         versionMark,
         badSegs,
+        others,
+        suspect,
         trackOk: hit.trackOk,
         artistOk: hit.artistOk,
         artistPartial: hit.artistPartial,
