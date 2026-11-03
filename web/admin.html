@@ -1297,11 +1297,11 @@ $('btn-pl-rename-file').onclick = async () => {
   }
   const ok = confirm(
     '将自动为 ' + total + ' 首歌按「歌名 - 歌手」改名（音频 + 同名歌词）。\n\n' +
-      '· 全自动，不需要逐个确认\n' +
-      '· 查不到标准名称的保持原名\n' +
-      '· 已经是标准名的自动跳过\n' +
-      '· 会真的改动磁盘上的文件名\n\n' +
-      '预计 1~2 分钟，中途可以点「停止」。开始吗？',
+      '会自动跳过、不改的：\n' +
+      '· remix / 钢琴版 / 伴奏 / 翻唱 / live 等版本类文件\n' +
+      '· 查不到标准名称的\n' +
+      '· 本来就是标准名的\n\n' +
+      '其余直接改名。预计 1~2 分钟，中途可点「停止」。开始吗？',
   );
   if (!ok) return;
 
@@ -1315,6 +1315,7 @@ $('btn-pl-rename-file').onclick = async () => {
 
   let changed = 0;
   let already = 0;
+  let skipped = 0; // 版本类文件 / 歌名对不上 —— 主动跳过，不改
   let notfound = 0;
   let failed = 0;
   let down = 0; // 连续「歌词库不可用」计数 —— 整站挂掉时别让人干等几分钟
@@ -1370,6 +1371,14 @@ $('btn-pl-rename-file').onclick = async () => {
       continue;
     }
 
+    // 宿主判定「不可信」→ 直接跳过。典型是 remix / 钢琴版 / 伴奏 / 翻唱这类：
+    // 歌词库只会返回原唱信息，照着改会把「雷米克斯」改成「卢广仲」，文件内容却还是 remix。
+    if (r.verdict === 'skip') {
+      renLog('⏭ ' + r.current + '\n     跳过：' + (r.why || '无法确认版本'), 'skip');
+      skipped++;
+      continue;
+    }
+
     // 查到就立刻改，不等整批查完 —— 47 首全查完要 1~2 分钟，边查边改进度才有意义
     try {
       const rr = await api('/api/music/rename', {
@@ -1379,7 +1388,13 @@ $('btn-pl-rename-file').onclick = async () => {
       });
       if ((rr.done || []).length) {
         const d0 = rr.done[0];
-        renLog('✅ ' + d0.old + '\n     → ' + d0.name + (d0.lrc ? '（歌词一起改了）' : ''), 'ok');
+        const low = r.verdict === 'low';
+        renLog(
+          (low ? '⚠️ ' : '✅ ') + d0.old + '\n     → ' + d0.name +
+            (d0.lrc ? '（歌词一起改了）' : '') +
+            (low ? '\n     ' + (r.why || '按原唱补全，请核对') : ''),
+          low ? 'warn' : 'ok',
+        );
         changed++;
       } else {
         const why = (rr.skipped && rr.skipped[0] && rr.skipped[0].reason) || '未改动';
@@ -1397,8 +1412,8 @@ $('btn-pl-rename-file').onclick = async () => {
   await plLoad();
   $('pl-ren-hint').textContent =
     (renStop ? '已停止。' : '全部完成。') +
-    '改名 ' + changed + ' 首 · 已规范 ' + already + ' 首 · 查不到 ' +
-    notfound + ' 首 · 未处理 ' + failed + ' 首';
+    '改名 ' + changed + ' 首 · 已规范 ' + already + ' 首 · 跳过 ' + skipped +
+    ' 首 · 查不到 ' + notfound + ' 首 · 未处理 ' + failed + ' 首';
   $('pl-hint').textContent = renStop
     ? '已停止（已改好的不会自动回退）'
     : '规范化命名完成：改名 ' + changed + ' 首';

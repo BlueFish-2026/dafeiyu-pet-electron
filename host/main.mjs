@@ -551,6 +551,83 @@ function normForMatch(s) {
 }
 
 /**
+ * 版本标记词：出现这些说明是「原版之外的演绎版本」。
+ *
+ * 歌词库（Lrclib）里的元信息基本只对应**原唱原版**，所以：
+ *   「刻在我心底的名字 - 雷米克斯」查到的必然是「刻在我心底的名字 - 卢广仲」
+ *   「刻在我心底的名字(钢琴版) - 浅绯色的喵」查到的也必然是原唱
+ * 这类改名**一定是错的** —— 名字改了，但文件还是那个 remix/钢琴版。
+ * 所以带这些标记的一律不改，让用户自己保留原文件名。
+ */
+const VERSION_MARKS = [
+  'remix',
+  'cover',
+  'live',
+  'instrumental',
+  'karaoke',
+  'demo',
+  'acoustic',
+  '钢琴',
+  '伴奏',
+  '翻唱',
+  '现场',
+  '纯音乐',
+  '吉他',
+  '古筝',
+  '小提琴',
+  '尤克里里',
+  'dj',
+  '加速',
+  '慢速',
+  '降调',
+  '升调',
+  '男声版',
+  '女声版',
+  '片段',
+  '剪辑',
+  '混音',
+  '清唱',
+  '无和声',
+  '八音盒',
+  '合唱版',
+  '重制',
+  '试听',
+];
+
+/** 检测文件名里的版本标记，返回命中的词（没命中返回空串） */
+function detectVersionMark(name) {
+  const s = String(name || '').toLowerCase();
+  for (const m of VERSION_MARKS) {
+    if (s.includes(m)) return m;
+  }
+  return '';
+}
+
+/**
+ * 把文件名按「空格 - 空格」切成若干段。用户的命名基本就是这两段：
+ *   「开始懂了 - 孙燕姿」→ [开始懂了, 孙燕姿]
+ *   「周杰倫 - 反方向的鐘」→ [周杰倫, 反方向的鐘]
+ * 没有分隔符就整串当一段（如「安静」「唯一-邓紫棋」）。
+ */
+function splitNameSegments(name) {
+  const s = String(name || '').trim();
+  const parts = s
+    .split(/\s+[-–—]\s+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+  return parts.length > 1 ? parts : [s];
+}
+
+/** 某一段是否能被「歌名 / 歌手」解释（互为子串，或歌手中文片段出现在该段里） */
+function segmentExplained(seg, tn, an, artist) {
+  if (!seg) return true;
+  if (tn && (seg.includes(tn) || tn.includes(seg))) return true;
+  if (an && (seg.includes(an) || an.includes(seg))) return true;
+  const runs = String(artist || '').match(/[\u4e00-\u9fff]{2,}/g) || [];
+  return runs.some((r) => seg.includes(normForMatch(r)));
+}
+
+/**
  * 查一次 Lrclib（带重试）。
  * 实测该站会偶发 503（限流/抖动），单次失败就放弃会让整批改名里随机几首"查不到"，
  * 所以对 5xx / 429 重试 2 次，间隔递增。
@@ -606,6 +683,10 @@ async function fetchMetaFromLrclib(trackName, durationSec) {
   const head = q.split(/\s+-\s+/)[0].trim();
   if (head && head !== q) queries.push(head);
 
+  // 原文件名的分段（保留原文，用于报"哪一段对不上"）
+  const rawSegs = splitNameSegments(q);
+  const segs = rawSegs.map(normForMatch).filter(Boolean);
+
   for (const query of queries) {
     const list = await lrclibSearch(query);
     const qn = normForMatch(q);
@@ -618,25 +699,47 @@ async function fetchMetaFromLrclib(trackName, durationSec) {
       const tn = normForMatch(track);
       const an = normForMatch(artist);
       let score = 0;
-      if (tn && qn.includes(tn)) score += 2;
-      if (an && qn.includes(an)) score += 2;
+      const trackOk = !!(tn && qn.includes(tn));
+      const artistOk = !!(an && qn.includes(an));
+      if (trackOk) score += 2;
+      if (artistOk) score += 2;
       // 一个字都没对上 → 不是同一首，直接丢
       if (score === 0) continue;
       // 歌手名没能整串对上，但其中有 2 字以上的中文片段出现在文件名里 → 算部分命中。
       // 例：文件名「唯一-邓紫棋」vs artist「G.E.M. 邓紫棋」——整串不是子串，但「邓紫棋」是。
+      let artistPartial = false;
       if (score === 2) {
         const runs = artist.match(/[\u4e00-\u9fff]{2,}/g) || [];
-        if (runs.some((r) => qn.includes(r))) score += 1;
+        if (runs.some((r) => qn.includes(r))) {
+          score += 1;
+          artistPartial = true;
+        }
       }
       let diff = 0;
       if (want > 0) {
         diff = Math.abs(Number(x.duration || 0) - want);
         if (diff <= 5) score += 1; // 时长对得上加分，不作为硬门槛（时长常拿不到）
       }
-      scored.push({ track, artist, duration: Number(x.duration || 0), score, diff });
+      // 关键判据：文件名的**每一段**都要能被这首歌的歌名或歌手解释。
+      // 「刻在我心底的名字 - 雷米克斯」→ 第一段是歌名 ✓，第二段「雷米克斯」谁也解释不了 ✗
+      //   → 说明这是原版之外的演绎版本，改成本尊就是错的。
+      // 「周杰倫 - 反方向的鐘」→ 两段分别命中歌手和歌名 ✓ → 可以改。
+      const badSegs = rawSegs.filter((seg) => !segmentExplained(normForMatch(seg), tn, an, artist));
+      scored.push({
+        track,
+        artist,
+        duration: Number(x.duration || 0),
+        score,
+        diff,
+        trackOk,
+        artistOk,
+        artistPartial,
+        badSegs,
+      });
     }
     if (scored.length) {
-      scored.sort((a, b) => b.score - a.score || a.diff - b.diff);
+      // 先比分数；同分时**优先"每一段都解释得通"的**（badSegs 少的），再比时长
+      scored.sort((a, b) => b.score - a.score || a.badSegs.length - b.badSegs.length || a.diff - b.diff);
       return scored[0];
     }
   }
@@ -1124,14 +1227,46 @@ async function handleApi(path, req, res, url) {
       const hit = await fetchMetaFromLrclib(fileBase, dur);
       if (!hit) return sendJson(res, 200, { ok: false, reason: 'not-found', current: fileBase });
       const proposed = sanitizeBaseName(hit.track + ' - ' + hit.artist);
+      const unchanged = normForMatch(proposed) === normForMatch(fileBase);
+
+      // ---- 是否可信，由宿主判定（前端只负责照着执行，不再自己猜）----
+      // ① 原文件名带 remix/钢琴版/伴奏… → 歌词库只会返回原唱，改了必错 → 不改
+      // ② 文件名的某一段歌词库解释不了（如「- 雷米克斯」）→ 是原版之外的演绎版本 → 不改
+      // ③ 连歌名都没对上 → 不是同一首 → 不改
+      // ④ 歌名对上、文件名里根本没写歌手（如「安静」）→ 补原唱是合理推测 → 改，但标 low
+      const versionMark = detectVersionMark(fileBase);
+      const badSegs = hit.badSegs || [];
+      let verdict = 'ok';
+      let why = '';
+      if (versionMark) {
+        verdict = 'skip';
+        why = '疑似' + versionMark + '版本，歌词库只会返回原唱，改了会错';
+      } else if (badSegs.length) {
+        verdict = 'skip';
+        why = '文件名里的「' + badSegs[0] + '」对不上歌词库，可能是 remix/翻唱版本';
+      } else if (!hit.trackOk) {
+        verdict = 'skip';
+        why = '歌名对不上，可能不是同一首';
+      } else if (!hit.artistOk && !hit.artistPartial) {
+        verdict = 'low';
+        why = '原文件名没有歌手，按原唱补全（如是翻唱请核对）';
+      }
+
       return sendJson(res, 200, {
         ok: true,
         current: fileBase,
         track: hit.track,
         artist: hit.artist,
         proposed,
-        unchanged: normForMatch(proposed) === normForMatch(fileBase),
+        unchanged,
         score: hit.score,
+        verdict,
+        why,
+        versionMark,
+        badSegs,
+        trackOk: hit.trackOk,
+        artistOk: hit.artistOk,
+        artistPartial: hit.artistPartial,
       });
     } catch (e) {
       const msg = String((e && e.message) || e);
