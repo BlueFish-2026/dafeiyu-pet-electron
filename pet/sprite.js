@@ -7,6 +7,47 @@
  */
 'use strict';
 
+// ---------- 歌词字体覆盖判定（软糖体只收了 GB2312，繁体几乎全缺） ----------
+// 软糖体实测 7568 码位 / CJK 汉字 6763 个 = GB2312 全集；繁体歌词会逐字回退到别的字体，
+// 一句里混两种字形，看起来参差不齐。这里的 base64 是 CJK 基本区(4E00-9FFF)的覆盖位图，
+// 2624 字节 → 3.4KB，用来**整首**判断能否全用软糖体；不能就整首换幼圆（覆盖 20902 字，繁简齐全）。
+const CANDY_CJK_LO = 0x4e00;
+const CANDY_CJK_HI = 0x9fff;
+const CANDY_CJK_BITSET_B64 =
+  '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';
+
+let candyBitset = null;
+function candyBitsetBytes() {
+  if (candyBitset) return candyBitset;
+  try {
+    const bin = atob(CANDY_CJK_BITSET_B64);
+    candyBitset = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) candyBitset[i] = bin.charCodeAt(i);
+  } catch (err) {
+    candyBitset = new Uint8Array(0);
+  }
+  return candyBitset;
+}
+
+/** 软糖体有没有这个字（只判 CJK 基本区；其它字符如标点/字母按"有"处理） */
+function candyHasChar(cp) {
+  if (cp < CANDY_CJK_LO || cp > CANDY_CJK_HI) return true;
+  const b = candyBitsetBytes();
+  if (!b.length) return true; // 位图异常就别降级，保持原样
+  const i = cp - CANDY_CJK_LO;
+  return !!(b[i >> 3] & (1 << (i & 7)));
+}
+
+/** 这段文字能不能整段用软糖体渲染 */
+function candyCovers(text) {
+  const s = String(text || '');
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
+    if (!candyHasChar(cp)) return false;
+  }
+  return true;
+}
+
 // ---------- 单只宠物（行为与浏览器 PetCard 一致；纯逻辑来自 src/shared） ----------
 class PetSprite {
   constructor(pet) {
@@ -138,6 +179,7 @@ class PetSprite {
     this.musicLyric = []; // 解析后的歌词 [{t: 秒, text}]，按 t 升序
     this.musicLyricText = ''; // 当前这一句（切行才重绘气泡）
     this.musicLyricOn = false; // 是否正处于「歌词跟唱」模式
+    this.musicLyricPlain = false; // 整首是否要用幼圆渲染（软糖体缺字时，避免一句里混两种字形）
     this.musicLyricSeq = 0; // 防竞态：快速切歌时丢弃过期的歌词响应
     this.musicAnimName = ''; // 上一首用的播放动画（auto 轮换时避开它）
     this.audioDeviceWatched = false; // 是否已挂上音频设备变化监听
@@ -1699,6 +1741,7 @@ class PetSprite {
     this.musicLyric = [];
     this.musicLyricText = '';
     this.musicLyricOn = false;
+    this.musicLyricPlain = false;
 
     const t = this.musicTracks && this.musicTracks[idx];
     if (!t) return;
@@ -1712,7 +1755,10 @@ class PetSprite {
         });
         if (r.ok) {
           const arr = this.parseLrc(await r.text());
-          if (seq === this.musicLyricSeq) this.musicLyric = arr;
+          if (seq === this.musicLyricSeq) {
+            this.musicLyric = arr;
+            this.musicLyricPlain = !candyCovers(arr.map((x) => (x && x.text) || '').join(''));
+          }
           return;
         }
       } catch (err) {
@@ -1744,6 +1790,7 @@ class PetSprite {
       if (seq !== this.musicLyricSeq) return; // 期间切歌了，结果作废
       if (d && d.ok && d.lrc) {
         this.musicLyric = this.parseLrc(d.lrc);
+        this.musicLyricPlain = !candyCovers(this.musicLyric.map((x) => (x && x.text) || '').join(''));
         this.musicTickLyric();
         this.showMusicBubble('♪ 已匹配歌词', 1800);
       }
@@ -2053,6 +2100,8 @@ class PetSprite {
       this.whisperView[0] &&
       this.whisperView[0].text === this.musicLyricText;
     this.bubble.classList.toggle('is-lyric', bubbleIsLyric);
+    // 软糖体缺繁体字：整首切幼圆，别让一句里混两种字形（逐字回退才是"参差不齐"的根源）
+    this.bubble.classList.toggle('is-lyric-plain', bubbleIsLyric && this.musicLyricPlain);
     this.bubble.classList.toggle(S.MEME_BUBBLE_CLASS, !!whisperImg);
     if (this.workOn) {
       // 工作状态气泡：workOn 期间占位（文本缺失时隐藏，绝不让更弱的碎碎念/余额气泡反超）

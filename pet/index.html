@@ -127,6 +127,14 @@
         line-height: 1.5;
         letter-spacing: calc(var(--pet-size, 462px) * 0.0015);
       }
+      /* 软糖体只收了 GB2312（6763 汉字），繁体歌会逐字回退 → 一句里混两种字形、参差不齐。
+         检测到整首有软糖体缺的字时挂这个 class，**整首**改用幼圆
+         （幼圆覆盖 20902 汉字，繁简齐全，同为圆体，气质最接近）。
+         字号再收一点：幼圆笔画比软糖体略粗、字面更大，不调会显得挤。 */
+      .pet-bubble.is-lyric.is-lyric-plain {
+        font-family: 'YouYuan', '幼圆', 'Microsoft YaHei', sans-serif;
+        font-size: calc(var(--pet-size, 462px) * 0.044);
+      }
       .pet-bub-row {
         display: flex;
         justify-content: space-between;
