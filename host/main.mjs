@@ -756,28 +756,53 @@ async function fetchMetaFromLrclib(trackName, durationSec) {
       });
     }
     if (scored.length) {
-      // 先比分数；同分时**优先"每一段都解释得通"的**（badSegs 少的），再比时长
-      scored.sort((a, b) => b.score - a.score || a.badSegs.length - b.badSegs.length || a.diff - b.diff);
-      return scored[0];
+      // ---- 排序：时长是唯一"独立于文件名"的证据，所以有它时它最优先 ----
+      // 「暗号 - 李泓伸」：文件名歌手是李泓伸(271s)，但文件实际 269s，
+      //   周杰伦版正好 269s → 时长说话，判成周杰伦。
+      //   没有时长时只能靠 score，而 score 里的 artistOk 恰恰来自文件名本身（循环论证），
+      //   所以绝不能让它排在时长前面。
+      let pool = scored;
+      let timeFiltered = false;
+      if (want > 0) {
+        const near = scored.filter((s) => s.duration > 0 && s.diff <= 6);
+        if (near.length) {
+          pool = near;
+          timeFiltered = true;
+        }
+      }
+      pool.sort((a, b) => {
+        // ① 有可信时长 → 时长差优先；判不出差别再看分数
+        if (timeFiltered && Math.abs(a.diff - b.diff) > 1) return a.diff - b.diff;
+        // ② 分数（歌名 + 文件名里的歌手）
+        if (b.score !== a.score) return b.score - a.score;
+        // ③ 「每一段都解释得通」优先
+        if (a.badSegs.length !== b.badSegs.length) return a.badSegs.length - b.badSegs.length;
+        // ④ 时长
+        return a.diff - b.diff;
+      });
+      const best = pool[0];
+      // ⚠️ 候选不能从 pool 里取：pool 来自 AND 搜索，通常只有文件名里那个歌手的一条。
+      // 真正的"所有版本"要另外按歌名搜（见 findAllVersions）
+      return { ...best, timeFiltered, want };
     }
   }
   return null;
 }
 
-/** 歌名 → 其他版本列表的缓存（同一次运行内不重复查） */
+/** 歌名 → 全部版本（每个歌手一条）的缓存 */
 const otherVersionCache = new Map();
 
 /**
- * 用**歌名**单独搜一次，看歌词库里还有哪些歌手唱过这首歌。
+ * 用**歌名**单独搜一次，列出歌词库里所有唱过这首歌的歌手。
  *
  * 为什么必须单独搜：Lrclib 是 AND 匹配。把「暗号 - 李泓伸」整串丢过去，
- * **只会返回李泓伸那一条**，周杰伦的版本压根不出现。于是我用"文件名里的歌手"
- * 去验证"搜到的歌手"，永远自洽 —— 文件名标错了也看不出来。
+ * **只会返回李泓伸那一条**，周杰伦的版本压根不出现。
+ * 于是我用"文件名里的歌手"去验证"搜到的歌手"，永远自洽 —— 文件名标错了也看不出来。
  * 这里换成只搜歌名，才能看到全量候选。
  *
- * @returns {Promise<Array<{artist:string,duration:number,hasLyric:boolean}>>}
+ * @returns {Promise<Array<{artist:string,track:string,duration:number,hasLyric:boolean}>>}
  */
-async function findOtherVersions(trackName, excludeArtist) {
+async function findAllVersions(trackName) {
   const key = normForMatch(trackName);
   if (!key) return [];
   if (otherVersionCache.has(key)) return otherVersionCache.get(key);
@@ -789,7 +814,6 @@ async function findOtherVersions(trackName, excludeArtist) {
     return []; // 查不到就算了，不影响主流程
   }
 
-  const ex = normForMatch(excludeArtist);
   const out = [];
   const seen = new Set();
   for (const x of list) {
@@ -798,14 +822,14 @@ async function findOtherVersions(trackName, excludeArtist) {
     if (!t || !a) continue;
     if (normForMatch(t) !== key) continue; // 歌名必须完全一致，别把别的歌混进来
     const an = normForMatch(a);
-    if (!an || an === ex || seen.has(an)) continue;
+    if (!an || seen.has(an)) continue;
     seen.add(an);
     out.push({
       artist: a,
+      track: t,
       duration: Math.round(Number(x.duration || 0)),
       hasLyric: !!(x.syncedLyrics && String(x.syncedLyrics).trim()),
     });
-    if (out.length >= 3) break;
   }
   otherVersionCache.set(key, out);
   return out;
@@ -1304,11 +1328,19 @@ async function handleApi(path, req, res, url) {
       // ① 原文件名带 remix/钢琴版/伴奏… → 歌词库只会返回原唱，改了必错 → 不改
       // ② 文件名的某一段歌词库解释不了（如「- 雷米克斯」）→ 是原版之外的演绎版本 → 不改
       // ③ 连歌名都没对上 → 不是同一首 → 不改
-      // ④ 歌名对上、文件名里根本没写歌手（如「安静」）→ 补原唱是合理推测 → 改，但标 low
+      // ④ 拿到了文件真实时长、但库里所有版本时长都对不上（差 >6s）→ 不是同一个录音 → 不改
+      // ⑤ 文件名标了歌手、但时长指向另一个歌手 → **问用户**（不擅自改他写的歌手）
+      // ⑥ 多个歌手版本时长差 ≤2s，判不出来 → **问用户**
+      // ⑦ 文件名根本没写歌手（如「安静」）→ 补原唱是合理推测 → 改，但标 low
       const versionMark = detectVersionMark(fileBase);
       const badSegs = hit.badSegs || [];
+      const filenamesSegs = splitNameSegments(fileBase);
+      // 文件名里有「歌名 - 歌手」这种分隔 → 说明它在声明一个歌手
+      const filenameClaimsArtist = filenamesSegs.length >= 2;
       let verdict = 'ok';
       let why = '';
+
+      // ---- 先跑不需要联网的判定（注定 skip 的就不再多花一次搜索）----
       if (versionMark) {
         verdict = 'skip';
         why = '疑似' + versionMark + '版本，歌词库只会返回原唱，改了会错';
@@ -1318,32 +1350,63 @@ async function handleApi(path, req, res, url) {
       } else if (!hit.trackOk) {
         verdict = 'skip';
         why = '歌词库里找不到这首歌（搜到的候选歌名都对不上），保留原名';
-      } else if (!hit.artistOk && !hit.artistPartial) {
-        verdict = 'low';
-        why = '原文件名没有歌手，按原唱补全（如是翻唱请核对）';
+      } else if (hit.want > 0 && !hit.timeFiltered) {
+        verdict = 'skip';
+        why = '歌词库里没有与你这首时长相符的版本（差得都超过 6 秒），不是同一个录音';
       }
 
-      // 文件名里**已经写了歌手**时，再按歌名搜一次，看库里还有没有别的歌手。
-      // 这是唯一能跳出"自己验证自己"的办法：整串搜只会返回同名歌手那一条。
-      let others = [];
-      if (hit.artistOk) {
-        others = await findOtherVersions(hit.track, hit.artist);
+      // ---- 候选版本（可能需要让用户选，也用于展示"其他版本"）----
+      // 数据来自「只按歌名搜」的结果；AND 搜索里只有一条，列不出别的歌手。
+      let candidates = [];
+      if (verdict !== 'skip') {
+        const allVersions = await findAllVersions(hit.track);
+        candidates = allVersions.slice();
+        // 有时长就只留时长对得上的（±6s）：这是"同一个录音"的物理证据
+        if (hit.want > 0) {
+          const near = candidates.filter((v) => v.duration > 0 && Math.abs(v.duration - hit.want) <= 6);
+          if (near.length) candidates = near;
+        }
+        if (!candidates.some((v) => normForMatch(v.artist) === normForMatch(hit.artist))) {
+          candidates.unshift({
+            artist: hit.artist,
+            track: hit.track,
+            duration: Math.round(hit.duration),
+            hasLyric: hit.hasLyric,
+          });
+        }
+        if (hit.want > 0) {
+          candidates.sort(
+            (a2, b2) => Math.abs((a2.duration || 0) - hit.want) - Math.abs((b2.duration || 0) - hit.want),
+          );
+        }
       }
-      // 选中的那条没有同步歌词、却有别的歌手版本「时长接近 + 带同步歌词」——
-      // 说明那个版本才是大家真正在用的，文件名里的歌手很可能标错了。
-      // 只提示，不自动改（用户明确要求"别瞎改"）。
-      let suspect = null;
-      if (!hit.hasLyric) {
-        suspect =
-          others.find(
-            (o) => o.hasLyric && o.duration > 0 && hit.duration > 0 && Math.abs(o.duration - hit.duration) <= 5,
-          ) || null;
+      // 判不出来：前两个歌手版本的时长差 ≤2 秒 —— 时长救不了，必须人来定
+      const ambiguous =
+        hit.want > 0 && candidates.length >= 2 &&
+        Math.abs((candidates[0].duration || 0) - (candidates[1].duration || 0)) <= 2;
+
+      if (verdict !== 'skip') {
+        if (ambiguous) {
+          verdict = 'ask';
+          why = '歌词库里这首歌有好几个版本，时长也分不出来，请你选一个';
+        } else if (filenameClaimsArtist && !hit.artistOk && !hit.artistPartial) {
+          // 文件名写了歌手 A，但时长指向歌手 B —— 不擅自改用户写的歌手，交给他定
+          verdict = 'ask';
+          why = '文件名写的是别的歌手，但时长指向「' + hit.artist + '」，请你确认';
+        } else if (!hit.artistOk && !hit.artistPartial) {
+          verdict = 'low';
+          why = '原文件名没有歌手，按原唱补全（如是翻唱请核对）';
+        }
       }
+
+      // 展示用：除选中那条以外的其他版本
+      const others = candidates.filter((v) => normForMatch(v.artist) !== normForMatch(hit.artist));
 
       return sendJson(res, 200, {
         ok: true,
         current: fileBase,
         track: hit.track,
+        trackForName: trackOut, // 出名字时优先沿用的写法（用户自己的更简洁）
         artist: hit.artist,
         proposed,
         unchanged,
@@ -1352,8 +1415,11 @@ async function handleApi(path, req, res, url) {
         why,
         versionMark,
         badSegs,
+        want: Math.round(hit.want || 0),
+        timeFiltered: !!hit.timeFiltered,
+        ambiguous,
+        candidates,
         others,
-        suspect,
         trackOk: hit.trackOk,
         artistOk: hit.artistOk,
         artistPartial: hit.artistPartial,

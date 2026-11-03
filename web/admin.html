@@ -1274,6 +1274,104 @@ function renLog(text, kind) {
   while (box.children.length > 400) box.removeChild(box.firstChild);
 }
 
+// 读音频文件的真实时长（秒）。拿不到返回 0。
+// 为什么需要它：这是**唯一独立于文件名的证据**。
+//   「暗号 - 李泓伸」文件名说李泓伸(271s)，但文件实际 269s，周杰伦版正好 269s → 时长能判对。
+// 做法：Audio 元素只加载 metadata（走 Range 请求读文件头），不解码整首歌。
+function trackDuration(i, listId, ms) {
+  return new Promise((resolve) => {
+    const a = new Audio();
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      try {
+        a.removeAttribute('src');
+        a.load();
+      } catch {
+        /* ignore */
+      }
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish(0), ms || 8000);
+    a.preload = 'metadata';
+    a.onloadedmetadata = () => {
+      clearTimeout(timer);
+      finish(isFinite(a.duration) ? a.duration : 0);
+    };
+    a.onerror = () => {
+      clearTimeout(timer);
+      finish(0);
+    };
+    a.src =
+      '/dsh-pet-7340/music/track/' + i + (listId ? '?list=' + encodeURIComponent(listId) : '');
+  });
+}
+
+// 「判不出来」时弹出候选按钮，由用户点选后才改。
+// 只在这种情况出现：文件名标的歌手和时长指向的歌手不一致，或几个版本时长差不出来。
+function renAsk(r, trackIdx, listId) {
+  const box = $('pl-ren-list');
+  const row = document.createElement('div');
+  row.style.cssText = 'border-bottom:1px solid rgba(127,127,127,.10);padding:6px 0';
+
+  const title = document.createElement('div');
+  title.style.cssText = 'color:#c46a00;white-space:pre-line';
+  title.textContent = '❓ ' + r.current + '\n     ' + r.why;
+  row.appendChild(title);
+
+  const bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:6px';
+
+  const done = (txt) => {
+    bar.textContent = '';
+    title.style.color = '#1a8f4a';
+    title.textContent = txt;
+  };
+
+  (r.candidates || []).slice(0, 4).forEach((c) => {
+    const b = document.createElement('button');
+    b.className = 'ghost';
+    b.style.cssText = 'padding:3px 9px;font-size:12px';
+    const parts = [c.duration + 's'];
+    if (r.want > 0 && c.duration > 0) parts.push('差 ' + Math.abs(c.duration - r.want) + 's');
+    if (c.hasLyric) parts.push('带歌词');
+    b.textContent = c.artist + '（' + parts.join('、') + '）';
+    b.onclick = async () => {
+      bar.textContent = '改名中…';
+      const base = (r.trackForName || r.track || '') + ' - ' + c.artist;
+      try {
+        const rr = await api('/api/music/rename', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ list: listId, items: [{ i: trackIdx, base }] }),
+        });
+        const d0 = (rr.done || [])[0];
+        done(d0 ? '✅ ' + d0.old + ' → ' + d0.name + (d0.lrc ? '（歌词一起改了）' : '') : '⚠️ 未改动');
+      } catch (e) {
+        done('❌ 改名失败：' + e.message);
+        title.style.color = '#c0392b';
+      }
+    };
+    bar.appendChild(b);
+  });
+
+  const keep = document.createElement('button');
+  keep.className = 'ghost';
+  keep.style.cssText = 'padding:3px 9px;font-size:12px';
+  keep.textContent = '保持原名';
+  keep.onclick = () => {
+    title.style.color = '#8a8a8a';
+    title.textContent = '⏭ ' + r.current + '　保持原名（你选的）';
+    bar.textContent = '';
+  };
+  bar.appendChild(keep);
+
+  row.appendChild(bar);
+  box.appendChild(row);
+  box.scrollTop = box.scrollHeight;
+}
+
 $('btn-pl-ren-stop').onclick = () => {
   if (renRunning) {
     renStop = true;
@@ -1336,6 +1434,7 @@ $('btn-pl-rename-file').onclick = async () => {
   let changed = 0;
   let already = 0;
   let skipped = 0; // 版本类文件 / 歌名对不上 —— 主动跳过，不改
+  let asked = 0; // 判不出来，已列出候选等用户点选
   let notfound = 0;
   let failed = 0;
   let down = 0; // 连续「歌词库不可用」计数 —— 整站挂掉时别让人干等几分钟
@@ -1349,9 +1448,15 @@ $('btn-pl-rename-file').onclick = async () => {
     $('pl-ren-hint').textContent = '处理中 ' + seen + ' / ' + total + '：' + t.name;
     if (seen > 1) await new Promise((r) => setTimeout(r, 200)); // 节流，别把歌词库打急
 
+    // 先读文件真实时长（本地 Range 请求，只读文件头，很快）。
+    // 它是唯一独立于文件名的证据 —— 没有它，遇到同名不同歌手就只能靠文件名自证。
+    const dur = await trackDuration(n, listId);
+
     let r;
     try {
-      r = await api('/api/music/meta?i=' + n + '&list=' + encodeURIComponent(listId));
+      r = await api(
+        '/api/music/meta?i=' + n + '&dur=' + Math.round(dur) + '&list=' + encodeURIComponent(listId),
+      );
     } catch (e) {
       // 404 = 宿主还是旧进程，根本没有这个接口。必须说清楚，
       // 否则看起来像"所有歌都查不到"（截图里 47 首全 404 就是这个）。
@@ -1385,17 +1490,25 @@ $('btn-pl-rename-file').onclick = async () => {
       continue;
     }
     down = 0;
-    if (r.unchanged) {
-      renLog('⏭ ' + r.current + '　已经是标准名' + othersNote(r), r.suspect ? 'warn' : 'skip');
-      already++;
-      continue;
-    }
-
-    // 宿主判定「不可信」→ 直接跳过。典型是 remix / 钢琴版 / 伴奏 / 翻唱这类：
-    // 歌词库只会返回原唱信息，照着改会把「雷米克斯」改成「卢广仲」，文件内容却还是 remix。
+    // ⚠️ 顺序要紧。三条分支的优先级：skip → ask → unchanged。
+    //   · skip 最优先：remix/钢琴版这类注定不改，理由比"已是标准名"更该说清楚
+    //   · ask 必须在 unchanged 之前：「暗号 - 李泓伸」新名和老名一样（都是李泓伸），
+    //     若先看 unchanged 就直接跳过，恰恰这一种最该问用户——名字没变，但歌手可能整个标错了
     if (r.verdict === 'skip') {
       renLog('⏭ ' + r.current + '\n     跳过：' + (r.why || '无法确认版本'), 'skip');
       skipped++;
+      continue;
+    }
+
+    if (r.verdict === 'ask') {
+      renAsk(r, n, listId);
+      asked++;
+      continue;
+    }
+
+    if (r.unchanged) {
+      renLog('⏭ ' + r.current + '　已经是标准名' + othersNote(r), 'skip');
+      already++;
       continue;
     }
 
@@ -1434,7 +1547,8 @@ $('btn-pl-rename-file').onclick = async () => {
   $('pl-ren-hint').textContent =
     (renStop ? '已停止。' : '全部完成。') +
     '改名 ' + changed + ' 首 · 已规范 ' + already + ' 首 · 跳过 ' + skipped +
-    ' 首 · 查不到 ' + notfound + ' 首 · 未处理 ' + failed + ' 首';
+    ' 首 · 需你确认 ' + asked + ' 首 · 查不到 ' + notfound + ' 首 · 未处理 ' + failed + ' 首' +
+    (asked ? '（需确认的在下面，点一下就会改）' : '');
   $('pl-hint').textContent = renStop
     ? '已停止（已改好的不会自动回退）'
     : '规范化命名完成：改名 ' + changed + ' 首';
