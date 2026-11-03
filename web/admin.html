@@ -67,6 +67,36 @@
   /* 曲目列表限高：46 首不再把页面撑到几千像素 */
   #pl-tracks { max-height: 340px; overflow-y: auto; padding-right: 4px; }
 
+  /* 歌单卡片：标题行（左标签 + 右管理按钮），chips 单独占一行。
+     原来 label 独占一行、三个按钮再占一行，白吃两行高度。 */
+  .pl-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-bottom: 8px;
+  }
+  .pl-head .flabel { font-size: 13px; color: var(--ink-2); font-weight: 600; }
+  .pl-head-ops { display: flex; gap: 6px; }
+  /* ⚠️ 必须带上 .ghost：后面有 `button.ghost{padding:...}`（同样 0,1,1 但更靠后），
+     只写 `.pl-head-ops button` 会被它覆盖，按钮还是原来的大个头 */
+  .pl-head-ops button.ghost { padding: 3px 11px; font-size: 12px; border-radius: 8px; }
+
+  /* 文件级操作：三等分，宽度一致才不像随便摆的 */
+  .pl-toolgrid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    margin: 12px 0 14px;
+  }
+  .pl-toolgrid button.ghost { width: 100%; padding: 9px 6px; font-size: 13px; }
+
+  /* 曲目行：紧凑一档，删除按钮平时淡出、鼠标移上去才明显 */
+  .pl-track-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 4px; border-bottom: 1px solid #f2f2f2; border-radius: 4px;
+  }
+  .pl-track-row:hover { background: #f8fbfc; }
+  .pl-track-row .icon-btn {
+    width: 24px; height: 24px; font-size: 13px; opacity: 0.35; transition: opacity 0.15s;
+  }
+  .pl-track-row:hover .icon-btn { opacity: 1; }
+
   /* 底部保存条：切到哪个标签都能直接点 */
   .actions.sticky-actions {
     position: sticky; bottom: 0; z-index: 9;
@@ -337,16 +367,18 @@
     <p class="hint-mini">在这里新建、切换、删除歌单，扫描加歌，管理曲目。</p>
 
     <div class="field">
-      <label>歌单</label>
-      <div id="pl-chips" class="pl-chips"></div>
-      <div class="row" style="margin-top:10px">
-        <button class="ghost" id="btn-pl-new">新建</button>
-        <button class="ghost" id="btn-pl-rename">重命名</button>
-        <button class="ghost" id="btn-pl-del">删除</button>
+      <div class="pl-head">
+        <span class="flabel">歌单</span>
+        <div class="pl-head-ops">
+          <button class="ghost" id="btn-pl-new">新建</button>
+          <button class="ghost" id="btn-pl-rename">重命名</button>
+          <button class="ghost" id="btn-pl-del">删除</button>
+        </div>
       </div>
+      <div id="pl-chips" class="pl-chips"></div>
     </div>
 
-    <div class="actions" style="margin-bottom:12px">
+    <div class="pl-toolgrid">
       <button class="ghost" id="btn-pl-scan">📁 扫描文件夹加歌</button>
       <button class="ghost" id="btn-pl-dedupe">清理重复与失效</button>
       <button class="ghost" id="btn-pl-rename-file">规范化命名</button>
@@ -399,8 +431,10 @@
 
   <div class="actions sticky-actions">
     <button class="primary" id="btn-save">保存</button>
-    <button class="ghost" id="btn-test-sed">试一下久坐提醒</button>
-    <button class="ghost" id="btn-test-sch">试一下定时提醒</button>
+    <!-- 两个"试一下"只在提醒标签下有意义的全局测试按钮；
+         放在歌单/音乐页纯属占位，切到别处时隐藏（见 applyTab） -->
+    <button class="ghost only-remind" id="btn-test-sed">试一下久坐提醒</button>
+    <button class="ghost only-remind" id="btn-test-sch">试一下定时提醒</button>
   </div>
 
 </div>
@@ -421,6 +455,11 @@ function applyTab(name) {
   });
   document.querySelectorAll('.tab').forEach((b) => {
     b.classList.toggle('is-on', b.dataset.tab === target);
+  });
+  // 「试一下久坐/定时提醒」只跟提醒有关，其他标签下不显示，
+  // 免得底部那条固定栏在歌单页里塞着两个不相干的按钮。
+  document.querySelectorAll('.only-remind').forEach((b) => {
+    b.style.display = target === 'remind' ? '' : 'none';
   });
   try {
     localStorage.setItem(TAB_KEY, target);
@@ -894,7 +933,7 @@ function plRenderTracks() {
   }
   l.tracks.forEach((t, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f0f0f0';
+    row.className = 'pl-track-row';
     const txt = document.createElement('div');
     txt.style.cssText = 'flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     // missing：宿主已经 stat 过，路径失效。标灰 + 说明，免得用户疑惑"这首怎么放不了"
