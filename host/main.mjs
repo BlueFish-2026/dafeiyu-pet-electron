@@ -31,7 +31,7 @@ import {
   appendFileSync,
   statSync,
 } from 'node:fs';
-import { join, extname, normalize, resolve, sep, dirname, relative } from 'node:path';
+import { join, extname, normalize, resolve, sep, dirname, relative, basename } from 'node:path';
 
 import { fileURLToPath } from 'node:url';
 
@@ -541,6 +541,119 @@ async function fetchLyricFromLrclib(trackName, durationSec) {
   };
 }
 
+// ---------------------------------------------------------------- 元信息反查（规范化命名用）
+
+/** 归一化用于比对：去空格、标点、括号，统一小写（简繁不处理，范围太大） */
+function normForMatch(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[\s\u3000_\-.·・,，、:：;；/\\()（）\[\]【】{}<>《》'"“”‘’!！?？+&~#@|]/g, '');
+}
+
+/**
+ * 查一次 Lrclib（带重试）。
+ * 实测该站会偶发 503（限流/抖动），单次失败就放弃会让整批改名里随机几首"查不到"，
+ * 所以对 5xx / 429 重试 2 次，间隔递增。
+ */
+async function lrclibSearch(q) {
+  let lastErr = null;
+  // 实测该站会成片报 503（某段时间连纯歌名查询都失败、偶尔插一条 200），
+  // 属于服务端抖动。重试 4 次、间隔递增，仍失败才算真没查到。
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 500 * attempt));
+    try {
+      const res = await net.fetch(LRCLIB_SEARCH + '?q=' + encodeURIComponent(q), {
+        headers: { 'User-Agent': LRCLIB_UA, accept: 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error('Lrclib ' + res.status + '（歌词库暂时不可用）');
+        continue;
+      }
+      if (!res.ok) throw new Error('Lrclib HTTP ' + res.status);
+      const list = await res.json();
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('Lrclib 请求失败');
+}
+
+/**
+ * 去 Lrclib 反查「歌名 / 歌手」——给「规范化命名」用。
+ *
+ * 与 fetchLyricFromLrclib 的区别：**不要求有同步歌词**（很多歌有元信息没歌词），
+ * 判据换成「歌名和歌手是否都出现在原文件名里」：
+ *   文件名「周杰倫 - 反方向的鐘」（歌手在前）
+ *   返回  trackName=反方向的鐘 artistName=周杰倫
+ *   两边归一化后都是原名的子串 → 强命中，顺序无关。
+ * 这样既躲开「谁在前」的歧义，也能筛掉同名的翻唱/他人版本（歌手对不上）。
+ *
+ * 两级查询（实测得出）：
+ *   Lrclib 是 AND 匹配。「刻在我心底的名字 - 雷米克斯」整串搜 → 0 条
+ *   （库里没有"雷米克斯"这个歌手，AND 直接空）。所以整串没结果时，
+ *   退一步只拿「第一个 - 之前的部分」当歌名再搜一次。
+ *   此时歌手名无法从原文件名确认 → score 只有 2，前端会标「请核对」。
+ *
+ * @returns {Promise<{track:string, artist:string, duration:number, score:number}|null>}
+ */
+async function fetchMetaFromLrclib(trackName, durationSec) {
+  const q = String(trackName || '').trim();
+  if (!q) return null;
+
+  const queries = [q];
+  const head = q.split(/\s+-\s+/)[0].trim();
+  if (head && head !== q) queries.push(head);
+
+  for (const query of queries) {
+    const list = await lrclibSearch(query);
+    const qn = normForMatch(q);
+    const want = Number(durationSec) || 0;
+    const scored = [];
+    for (const x of list) {
+      const track = String(x?.trackName || '').trim();
+      const artist = String(x?.artistName || '').trim();
+      if (!track || !artist) continue;
+      const tn = normForMatch(track);
+      const an = normForMatch(artist);
+      let score = 0;
+      if (tn && qn.includes(tn)) score += 2;
+      if (an && qn.includes(an)) score += 2;
+      // 一个字都没对上 → 不是同一首，直接丢
+      if (score === 0) continue;
+      // 歌手名没能整串对上，但其中有 2 字以上的中文片段出现在文件名里 → 算部分命中。
+      // 例：文件名「唯一-邓紫棋」vs artist「G.E.M. 邓紫棋」——整串不是子串，但「邓紫棋」是。
+      if (score === 2) {
+        const runs = artist.match(/[\u4e00-\u9fff]{2,}/g) || [];
+        if (runs.some((r) => qn.includes(r))) score += 1;
+      }
+      let diff = 0;
+      if (want > 0) {
+        diff = Math.abs(Number(x.duration || 0) - want);
+        if (diff <= 5) score += 1; // 时长对得上加分，不作为硬门槛（时长常拿不到）
+      }
+      scored.push({ track, artist, duration: Number(x.duration || 0), score, diff });
+    }
+    if (scored.length) {
+      scored.sort((a, b) => b.score - a.score || a.diff - b.diff);
+      return scored[0];
+    }
+  }
+  return null;
+}
+
+/** 「歌名 - 歌手」→ 合法文件名（不含扩展名）。Windows 非法字符换下划线 */
+function sanitizeBaseName(s) {
+  return String(s || '')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+/, '')
+    .replace(/[.\s]+$/, '')
+    .slice(0, 120)
+    .trim();
+}
+
 // ---------------------------------------------------------------- 提醒 → 宠物
 
 /**
@@ -994,6 +1107,168 @@ async function handleApi(path, req, res, url) {
       log('歌词匹配失败：' + ((e && e.message) || e));
       return sendJson(res, 200, { ok: false, reason: 'error' });
     }
+  }
+
+  // 反查单首的「歌名 / 歌手」——设置页「规范化命名」逐首调用，前端负责显示进度。
+  // 只读，不落盘、不改文件。
+  if (action === 'music/meta' && req.method === 'GET') {
+    const idx = Number(url.searchParams.get('i'));
+    const dur = Number(url.searchParams.get('dur')) || 0;
+    const l = playlists.lists.find((x) => x.id === (url.searchParams.get('list') || playlists.active));
+    const t = l && Number.isInteger(idx) && idx >= 0 ? l.tracks[idx] : null;
+    if (!t) return sendJson(res, 400, { ok: false, error: 'no such track' });
+
+    // 文件里已有标签就不必联网（绝大多数没有，但万一有就省一次请求）
+    const fileBase = basename(t.path).replace(/\.[^.]+$/, '');
+    try {
+      const hit = await fetchMetaFromLrclib(fileBase, dur);
+      if (!hit) return sendJson(res, 200, { ok: false, reason: 'not-found', current: fileBase });
+      const proposed = sanitizeBaseName(hit.track + ' - ' + hit.artist);
+      return sendJson(res, 200, {
+        ok: true,
+        current: fileBase,
+        track: hit.track,
+        artist: hit.artist,
+        proposed,
+        unchanged: normForMatch(proposed) === normForMatch(fileBase),
+        score: hit.score,
+      });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      return sendJson(res, 200, {
+        ok: false,
+        reason: /50[0-9]|429/.test(msg) ? 'unavailable' : 'error',
+        error: msg,
+        current: fileBase,
+      });
+    }
+  }
+
+  // 批量改名（音频 + 同名 .lrc + 歌单里的路径）
+  // ⚠️ 会动磁盘上的文件，所以前端必须先出预览表、用户勾选确认后才调这里。
+  if (action === 'music/rename' && req.method === 'POST') {
+    const body = await readBody(req);
+    let incoming;
+    try {
+      incoming = JSON.parse(body);
+    } catch {
+      return sendJson(res, 400, { ok: false, error: '请求体不是合法 JSON' });
+    }
+    const listId = String(incoming?.list || playlists.active);
+    const l = playlists.lists.find((x) => x.id === listId);
+    if (!l) return sendJson(res, 400, { ok: false, error: '没有这个歌单' });
+    const items = Array.isArray(incoming?.items) ? incoming.items : [];
+    if (!items.length) return sendJson(res, 400, { ok: false, error: '没有要改名的曲目' });
+    if (items.length > 500) return sendJson(res, 400, { ok: false, error: '一次最多改 500 首' });
+
+    // ① 全部先校验，算出计划（此时一个文件都没动）
+    const plan = [];
+    const skipped = [];
+    for (const it of items) {
+      const idx = Number(it?.i);
+      const base = sanitizeBaseName(it?.base);
+      const t = Number.isInteger(idx) && idx >= 0 ? l.tracks[idx] : null;
+      if (!t) {
+        skipped.push({ name: it?.base || '', reason: '曲目不存在' });
+        continue;
+      }
+      const oldBase = basename(t.path).replace(/\.[^.]+$/, '');
+      if (!base) {
+        skipped.push({ name: oldBase, reason: '新文件名为空' });
+        continue;
+      }
+      if (!existsSync(t.path)) {
+        skipped.push({ name: oldBase, reason: '原文件不在' });
+        continue;
+      }
+      const ext = extname(t.path);
+      const dir = dirname(t.path);
+      const target = join(dir, base + ext);
+      if (resolve(target) === resolve(t.path)) {
+        skipped.push({ name: oldBase, reason: '名字没变' });
+        continue;
+      }
+      plan.push({ t, oldPath: t.path, oldBase, dir, ext, target, base });
+    }
+
+    // ①.5 目标名的两道把关（Windows 的 rename 是「替换已存在」语义，会静默覆盖）：
+    //   a. 批内两首改成同一个名字 → 只留第一首
+    //   b. 目标文件名已被**本次不改**的其它文件占用 → 跳过，别覆盖别人的歌
+    const sourcePaths = new Set(plan.map((p) => p.oldPath.toLowerCase()));
+    const seenTarget = new Set();
+    const finalPlan = [];
+    for (const p of plan) {
+      const key = p.target.toLowerCase();
+      if (seenTarget.has(key)) {
+        skipped.push({ name: p.oldBase, reason: '与批内另一首改成同名，已跳过' });
+        continue;
+      }
+      if (existsSync(p.target) && !sourcePaths.has(key)) {
+        skipped.push({ name: p.oldBase, reason: '目标文件名已被其它文件占用，已跳过' });
+        continue;
+      }
+      seenTarget.add(key);
+      finalPlan.push(p);
+    }
+
+    // ② 分两段 rename（先到临时名，再到目标名）——这样「A→B、B→C」互换算不会互相踩
+    const staged = [];
+    for (const p of finalPlan) {
+      const tmp = p.target + '.dshren.tmp';
+      try {
+        renameSync(p.oldPath, tmp);
+        staged.push({ ...p, tmp });
+      } catch (e) {
+        skipped.push({ name: p.oldBase, reason: '改名失败：' + ((e && e.message) || e) });
+      }
+    }
+
+    const done = [];
+    for (const s of staged) {
+      try {
+        renameSync(s.tmp, s.target);
+      } catch (e) {
+        // 落不回目标就把临时名还原成原名，别留 .dshren.tmp 垃圾
+        try {
+          renameSync(s.tmp, s.oldPath);
+        } catch {
+          /* 还原也失败：日志留证 */
+          log(`⚠️ 改名还原失败，请手动检查：${s.tmp}`);
+        }
+        skipped.push({ name: s.oldBase, reason: '落盘失败：' + ((e && e.message) || e) });
+        continue;
+      }
+
+      // 同名 .lrc 跟着走（目标已有 lrc 就不覆盖）
+      const oldLrc = s.oldPath.replace(/\.[^.]+$/, '.lrc');
+      const newLrc = s.target.replace(/\.[^.]+$/, '.lrc');
+      let lrcMoved = false;
+      if (existsSync(oldLrc) && !existsSync(newLrc)) {
+        try {
+          renameSync(oldLrc, newLrc);
+          lrcMoved = true;
+        } catch {
+          /* 歌词改不动不影响音频已改好 */
+        }
+      }
+
+      // 所有歌单里指向这个文件的路径与显示名都要更新（同一首歌可能在多个歌单）
+      for (const list of playlists.lists) {
+        for (const tr of list.tracks) {
+          if (tr.path === s.oldPath) {
+            tr.path = s.target;
+            tr.name = s.base;
+          }
+        }
+      }
+      done.push({ old: s.oldBase + s.ext, name: s.base + s.ext, lrc: lrcMoved });
+    }
+
+    if (done.length) {
+      savePlaylists();
+      log(`规范化命名：改名成功 ${done.length} 首，跳过 ${skipped.length} 首`);
+    }
+    return sendJson(res, 200, { ok: true, done, skipped });
   }
 
   // 选一个文件夹并扫描（设置页「扫描文件夹」按钮）—— 弹系统对话框，只能在主进程做

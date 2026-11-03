@@ -349,6 +349,18 @@
     <div class="actions" style="margin-bottom:12px">
       <button class="ghost" id="btn-pl-scan">📁 扫描文件夹加歌</button>
       <button class="ghost" id="btn-pl-dedupe">清理重复与失效</button>
+      <button class="ghost" id="btn-pl-rename-file">规范化命名</button>
+    </div>
+
+    <!-- 规范化命名：先出预览表，勾选确认后才真正改名 -->
+    <div class="field" id="pl-ren-wrap" style="display:none">
+      <label>规范化命名预览</label>
+      <p class="hint-mini" id="pl-ren-hint" style="margin-left:0"></p>
+      <div id="pl-ren-list" class="reminder-wrap" style="max-height:320px"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="btn-pl-ren-apply">执行改名</button>
+        <button class="ghost" id="btn-pl-ren-cancel">取消</button>
+      </div>
     </div>
 
     <div class="field" id="pl-scan-wrap" style="display:none">
@@ -1240,6 +1252,178 @@ $('btn-pl-scan').onclick = async () => {
     $('pl-hint').textContent = '扫描到 ' + plScan.files.length + ' 首';
   } catch (e) {
     $('pl-hint').textContent = '扫描失败：' + e.message;
+  }
+};
+
+// ── 规范化命名 ───────────────────────────────────────────────
+// 流程：查询（只读）→ 预览表（可勾选）→ 确认 → 才改文件。
+// 绝不静默改用户的文件：任何一个环节都可能被取消。
+let renPlan = [];
+
+function plRenderRename() {
+  const box = $('pl-ren-list');
+  box.textContent = '';
+  if (!renPlan.length) {
+    const e = document.createElement('div');
+    e.style.cssText = 'padding:10px 0;color:var(--muted)';
+    e.textContent = '没有可改名的曲目';
+    box.appendChild(e);
+    return;
+  }
+  renPlan.forEach((it) => {
+    const row = document.createElement('label');
+    row.style.cssText =
+      'display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid rgba(127,127,127,.12);cursor:pointer';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!it.checked;
+    cb.style.marginTop = '3px';
+    cb.onchange = () => {
+      it.checked = cb.checked;
+    };
+    row.appendChild(cb);
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'flex:1;min-width:0;line-height:1.5';
+
+    if (it.proposed) {
+      const oldEl = document.createElement('div');
+      oldEl.style.cssText = 'color:var(--muted);font-size:12px;text-decoration:line-through';
+      oldEl.textContent = it.current;
+      wrap.appendChild(oldEl);
+
+      const newEl = document.createElement('div');
+      newEl.style.cssText = 'font-size:13px';
+      newEl.textContent = it.proposed;
+      wrap.appendChild(newEl);
+
+      if (it.note) {
+        const n = document.createElement('div');
+        n.style.cssText = 'color:#c46a00;font-size:11px;margin-top:2px';
+        n.textContent = it.note;
+        wrap.appendChild(n);
+      }
+    } else {
+      const oldEl = document.createElement('div');
+      oldEl.style.cssText = 'color:var(--muted);font-size:12px';
+      oldEl.textContent = it.current + '　—　' + (it.note || '未匹配');
+      wrap.appendChild(oldEl);
+      cb.checked = false;
+      cb.disabled = true;
+    }
+    row.appendChild(wrap);
+    box.appendChild(row);
+  });
+}
+
+$('btn-pl-ren-cancel').onclick = () => {
+  renPlan = [];
+  $('pl-ren-wrap').style.display = 'none';
+  $('pl-hint').textContent = '已取消，未改动任何文件';
+};
+
+$('btn-pl-rename-file').onclick = async () => {
+  const l = plCurrent();
+  if (!l || !(l.tracks || []).length) {
+    $('pl-hint').textContent = '这个歌单还没有歌';
+    return;
+  }
+  const alive = l.tracks.filter((t) => !t.missing);
+  if (!alive.length) {
+    $('pl-hint').textContent = '这个歌单里没有文件仍在的曲目';
+    return;
+  }
+  const ok = confirm(
+    '将为 ' + alive.length + ' 首歌联网查询标准「歌名 - 歌手」名称。\n\n' +
+      '· 这一步只查询，不改动任何文件\n' +
+      '· 查完会先给你看改名预览，勾选确认后才真正改名\n' +
+      '· 估计需要 ' + Math.ceil(alive.length * 1.5) + ' 秒左右\n\n继续吗？',
+  );
+  if (!ok) return;
+
+  renPlan = [];
+  $('pl-ren-wrap').style.display = 'block';
+  $('pl-ren-list').textContent = '';
+  const listId = plState.active;
+
+  for (let n = 0; n < l.tracks.length; n++) {
+    const t = l.tracks[n];
+    if (t.missing) continue;
+    $('pl-ren-hint').textContent = '查询中 ' + (n + 1) + ' / ' + l.tracks.length + '：' + t.name;
+    // 轻微节流：Lrclib 会偶发 503，连打太快更容易被限流（宿主侧还有 2 次重试兜底）
+    if (n > 0) await new Promise((r) => setTimeout(r, 250));
+    try {
+      const r = await api('/api/music/meta?i=' + n + '&list=' + encodeURIComponent(listId));
+      if (r.ok && r.proposed) {
+        renPlan.push({
+          i: n,
+          current: r.current,
+          proposed: r.proposed,
+          // 歌手没能在原文件名里对上 → 可能是翻唱/他人版本，标出来让人自己看
+          note: r.score >= 3 ? '' : '歌手未在原文件名中确认，请核对',
+          checked: !r.unchanged,
+        });
+      } else {
+        const why =
+          r.reason === 'unavailable'
+            ? '歌词库暂时不可用，稍后再试'
+            : r.reason === 'not-found'
+              ? '未匹配到标准名称'
+              : '查询失败';
+        renPlan.push({ i: n, current: r.current || t.name, proposed: '', note: why, checked: false });
+      }
+    } catch (e) {
+      renPlan.push({ i: n, current: t.name, proposed: '', note: '查询失败：' + e.message, checked: false });
+    }
+  }
+
+  const matched = renPlan.filter((x) => x.proposed).length;
+  const unmatched = renPlan.length - matched;
+  const down = renPlan.filter((x) => x.note && x.note.indexOf('不可用') >= 0).length;
+  $('pl-ren-hint').textContent = down
+    ? '查询完成：' + matched + ' 首匹配，' + down + ' 首因歌词库暂时不可用未能查询（过几分钟再点一次「规范化命名」会重查）'
+    : '查询完成：' + matched + ' 首匹配到标准名称' +
+      (unmatched ? '，' + unmatched + ' 首未匹配（保持原名）' : '') +
+      '。核对后点「执行改名」，没勾选的不会动。';
+  plRenderRename();
+};
+
+$('btn-pl-ren-apply').onclick = async () => {
+  const items = renPlan.filter((x) => x.proposed && x.checked).map((x) => ({ i: x.i, base: x.proposed }));
+  if (!items.length) {
+    $('pl-hint').textContent = '没有勾选任何要改名的曲目';
+    return;
+  }
+  const ok = confirm(
+    '即将重命名 ' + items.length + ' 个文件（以及同名的 .lrc 歌词）。\n\n' +
+      '⚠️ 这会真的改动磁盘上的文件名，操作不可撤销。\n\n' +
+      '前 3 个示例：\n' +
+      items
+        .slice(0, 3)
+        .map((x) => '  → ' + x.base)
+        .join('\n') +
+      '\n\n确定执行吗？',
+  );
+  if (!ok) return;
+
+  $('pl-hint').textContent = '正在改名…';
+  try {
+    const r = await api('/api/music/rename', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ list: plState.active, items }),
+    });
+    const done = (r.done || []).length;
+    const skipped = (r.skipped || []).length;
+    renPlan = [];
+    $('pl-ren-wrap').style.display = 'none';
+    await plLoad();
+    $('pl-hint').textContent =
+      '改名完成：成功 ' + done + ' 首' +
+      (skipped ? '，跳过 ' + skipped + ' 首（' + (r.skipped[0].reason || '') + ' 等）' : '');
+  } catch (e) {
+    $('pl-hint').textContent = '改名失败：' + e.message;
   }
 };
 
