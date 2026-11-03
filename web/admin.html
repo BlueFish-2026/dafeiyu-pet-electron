@@ -53,6 +53,17 @@
   .card[data-panel] { display: none; }
   .card[data-panel].is-on { display: block; }
 
+  /* 歌单 chips：管理侧横向排列，点一下切当前歌单 */
+  /* width:100% 让 chips 容器独占一行；否则内容少时会和上方的「歌单」标签挤在同一行 */
+  .pl-chips { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+  .pl-chip {
+    padding: 6px 13px; border-radius: 999px; border: 1px solid var(--line);
+    background: #fff; font-size: 13px; color: var(--ink-2); cursor: pointer;
+    font-family: inherit; transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .pl-chip:hover { border-color: var(--sky); color: var(--sky); }
+  .pl-chip.is-on { background: var(--sky); border-color: var(--sky); color: #fff; font-weight: 600; }
+
   /* 曲目列表限高：46 首不再把页面撑到几千像素 */
   #pl-tracks { max-height: 340px; overflow-y: auto; padding-right: 4px; }
 
@@ -294,18 +305,15 @@
     </div>
   </div>
 
+  <!-- 音乐 = 消费侧：选歌单 / 选模式 / 看曲目（只读）。
+       所有增删改都在「歌单」标签，避免"扫描完还要切走才能建歌单"的割裂。 -->
   <div class="card" data-panel="music">
     <h2><span class="ico">🎵</span>音乐</h2>
-    <p class="hint-mini">歌单在宠物右键菜单「音乐」里播放。加歌、改曲目去「歌单」标签。</p>
+    <p class="hint-mini">歌单在宠物右键菜单「音乐」里播放。新建/删除歌单、加歌去「歌单」标签。</p>
 
     <div class="field">
       <label>当前歌单</label>
-      <div class="row">
-        <select id="pl-select" style="flex:1"></select>
-        <button class="ghost" id="btn-pl-new">新建</button>
-        <button class="ghost" id="btn-pl-rename">重命名</button>
-        <button class="ghost" id="btn-pl-del">删除</button>
-      </div>
+      <select id="pl-select" style="width:100%"></select>
     </div>
 
     <div class="field">
@@ -316,11 +324,27 @@
         <option value="shuffle">随机播放（洗牌播完再重洗）</option>
       </select>
     </div>
+
+    <div class="field">
+      <label>曲目<span class="hint-mini" id="pl-view-count" style="margin-left:8px"></span></label>
+      <div id="pl-tracks-view" class="reminder-wrap"></div>
+    </div>
   </div>
 
+  <!-- 歌单 = 管理侧：新建/切换/改名/删除 + 扫描加歌 + 曲目增删 + 清理 -->
   <div class="card" data-panel="playlist">
     <h2><span class="ico">📋</span>歌单</h2>
-    <p class="hint-mini">正在管理「<span id="pl-cur-name">—</span>」。切换歌单去「音乐」标签。</p>
+    <p class="hint-mini">在这里新建、切换、删除歌单，扫描加歌，管理曲目。</p>
+
+    <div class="field">
+      <label>歌单</label>
+      <div id="pl-chips" class="pl-chips"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="ghost" id="btn-pl-new">新建</button>
+        <button class="ghost" id="btn-pl-rename">重命名</button>
+        <button class="ghost" id="btn-pl-del">删除</button>
+      </div>
+    </div>
 
     <div class="actions" style="margin-bottom:12px">
       <button class="ghost" id="btn-pl-scan">📁 扫描文件夹加歌</button>
@@ -756,6 +780,8 @@ async function plLoad() {
     plRender();
   } catch (e) {
     $('pl-hint').textContent = '读取失败：' + e.message;
+    // 失败也要渲染骨架：否则 chips / 曲目区整片空白，用户不知道是"没歌单"还是"加载挂了"
+    plRender();
   }
 }
 
@@ -778,12 +804,69 @@ function plRender() {
   const cur = plCurrent();
   $('pl-mode').value = cur ? cur.mode || 'sequential' : 'sequential';
   $('pl-mode').disabled = !cur;
-  // 歌单标签页里显示「正在管理哪个」——歌单切换器留在「音乐」标签，这里只做只读提示
-  const nameEl = $('pl-cur-name');
-  if (nameEl) {
-    nameEl.textContent = cur ? cur.name + '（' + (cur.tracks || []).length + ' 首）' : '（还没有歌单）';
+  plRenderChips(); // 管理侧：横向 chips，直接在这切歌单
+  plRenderTracksView(); // 消费侧：只读曲目预览
+  plRenderTracks(); // 管理侧：可删的曲目列表
+}
+
+/** 歌单 chips（「歌单」标签）：点一下切换当前歌单 */
+function plRenderChips() {
+  const box = $('pl-chips');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!plState.lists.length) {
+    const e = document.createElement('div');
+    // 不用 .hint-mini：那个类带 margin-left:auto（给行内右侧提示用的），套在这里会被推到行尾
+    e.style.cssText = 'font-size:12px;color:var(--ink-3)';
+    e.textContent = '还没有歌单，点下面「新建」';
+    box.appendChild(e);
+    return;
   }
-  plRenderTracks();
+  for (const l of plState.lists) {
+    const b = document.createElement('button');
+    b.className = 'pl-chip' + (l.id === plState.active ? ' is-on' : '');
+    b.textContent = l.name + '（' + (l.tracks || []).length + '）';
+    b.onclick = () => {
+      if (l.id === plState.active) return;
+      plState.active = l.id;
+      plRender();
+      void plSave();
+    };
+    box.appendChild(b);
+  }
+}
+
+/** 只读曲目预览（「音乐」标签）：看得到歌，但增删要回「歌单」标签 */
+function plRenderTracksView() {
+  const box = $('pl-tracks-view');
+  if (!box) return;
+  box.innerHTML = '';
+  const l = plCurrent();
+  const tracks = (l && l.tracks) || [];
+  const cnt = $('pl-view-count');
+  if (cnt) cnt.textContent = tracks.length ? '共 ' + tracks.length + ' 首' : '';
+  if (!tracks.length) {
+    const e = document.createElement('div');
+    e.style.cssText = 'font-size:12px;color:var(--ink-3)';
+    e.textContent = '这个歌单还没有歌，去「歌单」标签扫描加歌';
+    box.appendChild(e);
+    return;
+  }
+  const LIMIT = 60;
+  tracks.slice(0, LIMIT).forEach((t, i) => {
+    const row = document.createElement('div');
+    row.style.cssText =
+      'font-size:13px;padding:3px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:' +
+      (t.missing ? '#9ca3af' : '#2b2b2b');
+    row.textContent = i + 1 + '. ' + t.name + (t.missing ? '（文件已移走）' : '');
+    box.appendChild(row);
+  });
+  if (tracks.length > LIMIT) {
+    const more = document.createElement('div');
+    more.className = 'hint-mini';
+    more.textContent = '……还有 ' + (tracks.length - LIMIT) + ' 首，去「歌单」标签看全部';
+    box.appendChild(more);
+  }
 }
 
 function plRenderTracks() {
