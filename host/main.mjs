@@ -835,6 +835,202 @@ async function findAllVersions(trackName) {
   return out;
 }
 
+// ---------------------------------------------------------------- 备用数据源（MusicBrainz）
+// Lrclib 会成片 503（实测整站挂掉），单靠它的话「规范化命名」直接瘫痪。
+// MusicBrainz 是 MetaBrainz 的开放音乐库，同样免 key、公开 API，数据更权威（有专辑/时长/艺人）。
+// 但它返回的是**繁体**（周杰倫 / 盧廣仲），所以这里**不用它来判断"是否同一个人"**，
+// 只取「歌名 + 时长」——时长是数字，不受简繁影响。
+const MB_SEARCH = 'https://musicbrainz.org/ws/2/recording';
+// MB 要求 UA 里带可联系方式，否则可能被限流
+const MB_UA = 'DaFeiYuPet/1.3 ( https://github.com/BlueFish-2026/dafeiyu-pet-electron )';
+// MB 硬性限速：每秒 1 次。必须自己排队，否则会连续 503
+let mbLastAt = 0;
+const MB_MIN_GAP = 1100;
+
+/**
+ * 两个名字是不是"同一个人的简繁写法"。
+ * 判据：长度相同，且**同一位置上至少有一个字相同**。
+ *   「周杰倫」vs「周杰伦」→ 位置0、1 同 → 是
+ *   「盧廣仲」vs「卢广仲」→ 位置2"仲"同 → 是
+ *   「李泓伸」vs「周杰倫」→ 一个都对不上 → 不是
+ * 宁可误判成"是"（多问一次），也不要误判成"不是"（错改成别人）。
+ */
+function sameNameLoose(a, b) {
+  const x = String(a || '');
+  const y = String(b || '');
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (x.length !== y.length || x.length < 2) return false;
+  let same = 0;
+  for (let i = 0; i < x.length; i++) if (x[i] === y[i]) same++;
+  return same >= 1;
+}
+
+/**
+ * segmentExplained 的简繁容忍版：MusicBrainz 返回繁体，用严格的子串判断会把
+ * 「太阳与地球」vs「太陽與地球」判成对不上。这里额外允许 sameNameLoose 命中。
+ * 用途：找出文件名里"谁也解释不了的段"（如「- 雷米克斯」）→ 判定为演绎版本，不改。
+ */
+function segExplainedLoose(seg, track, artist) {
+  const sn = normForMatch(seg);
+  const tn = normForMatch(track);
+  const an = normForMatch(artist);
+  if (!sn) return true;
+  if (tn && (sn.includes(tn) || tn.includes(sn))) return true;
+  if (an && (sn.includes(an) || an.includes(sn))) return true;
+  if (sameNameLoose(seg, track) || sameNameLoose(seg, artist)) return true;
+  const runs = String(artist || '').match(/[\u4e00-\u9fff]{2,}/g) || [];
+  return runs.some((r) => sn.includes(normForMatch(r)));
+}
+
+/** 查一次 MusicBrainz（带限速 + 重试） */
+async function mbSearch(query) {
+  if (!query) return [];
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // 排队：距上次请求不足 1.1s 就先等
+    const wait = mbLastAt + MB_MIN_GAP - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    mbLastAt = Date.now();
+    try {
+      const url = MB_SEARCH + '?query=' + encodeURIComponent(query) + '&fmt=json&limit=25';
+      const res = await net.fetch(url, {
+        headers: { 'User-Agent': MB_UA, accept: 'application/json' },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error('MusicBrainz ' + res.status);
+        continue;
+      }
+      if (!res.ok) throw new Error('MusicBrainz HTTP ' + res.status);
+      const data = await res.json();
+      return Array.isArray(data?.recordings) ? data.recordings : [];
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('MusicBrainz 请求失败');
+}
+
+/** 取 recording 的歌手名（可能是多个，用 / 连接） */
+function mbArtist(rec) {
+  const list = rec?.['artist-credit'];
+  if (!Array.isArray(list)) return '';
+  return list
+    .filter((a) => a && typeof a === 'object' && a.artist)
+    .map((a) => String(a.artist.name || '').trim())
+    .filter(Boolean)
+    .join(' / ');
+}
+
+/**
+ * MusicBrainz 版的元信息查询。返回结构与 fetchMetaFromLrclib 对齐，方便路由统一处理。
+ *
+ * 与 Lrclib 版的关键差异：**歌手是否"对得上"用 sameNameLoose 判**（容忍简繁），
+ * 因为 MB 数据本身就是繁体，直接用字符串相等会把「卢广仲」和「盧廣仲」判成两个人。
+ */
+async function fetchMetaFromMusicBrainz(trackName, durationSec) {
+  const q = String(trackName || '').trim();
+  if (!q) return null;
+
+  const rawSegs = splitNameSegments(q);
+  const want = Number(durationSec) || 0;
+
+  // 先用整串搜；搜不到就用最长的那一段（多半是歌名）
+  let list = await mbSearch(q);
+  if (!list.length && rawSegs.length > 1) {
+    const longest = rawSegs.slice().sort((a, b) => b.length - a.length)[0];
+    if (longest && longest !== q) list = await mbSearch(longest);
+  }
+  if (!list.length) return null;
+
+  const scored = [];
+  for (const rec of list) {
+    const track = String(rec?.title || '').trim();
+    const artist = mbArtist(rec);
+    const dur = Math.round(Number(rec?.length || 0) / 1000);
+    if (!track || !artist || !dur) continue;
+
+    const tn = normForMatch(track);
+    // 歌名：文件名的某一段要能被它解释（互为包含，或简繁近似）
+    let trackOk = false;
+    let segForTrack = '';
+    for (const seg of rawSegs) {
+      const sn = normForMatch(seg);
+      if (!sn) continue;
+      if (sn.includes(tn) || tn.includes(sn) || sameNameLoose(seg, track)) {
+        trackOk = true;
+        segForTrack = seg;
+        break;
+      }
+    }
+    if (!trackOk) continue;
+
+    // 歌手：文件名里有没有这个人（容许简繁差异）
+    let artistOk = false;
+    let artistPartial = false;
+    let segForArtist = '';
+    for (const seg of rawSegs) {
+      if (normForMatch(seg) === normForMatch(artist)) {
+        artistOk = true;
+        segForArtist = seg;
+        break;
+      }
+      if (!segForArtist && sameNameLoose(seg, artist)) {
+        artistPartial = true;
+        segForArtist = seg;
+      }
+    }
+
+    const diff = want > 0 ? Math.abs(dur - want) : 0;
+    // 文件名里有没有"谁也解释不了的段"（如「- 雷米克斯」）→ 说明这是演绎版本，别改成原唱
+    const badSegs = rawSegs.filter((seg) => !segExplainedLoose(seg, track, artist));
+    scored.push({
+      track,
+      artist,
+      duration: dur,
+      score: (trackOk ? 2 : 0) + (artistOk ? 2 : 0) + (artistPartial ? 1 : 0),
+      diff,
+      trackOk,
+      artistOk,
+      artistPartial,
+      badSegs,
+      segForTrack,
+      segForArtist,
+      hasLyric: false, // MB 不提供歌词
+    });
+  }
+  if (!scored.length) return null;
+
+  let pool = scored;
+  let timeFiltered = false;
+  if (want > 0) {
+    const near = scored.filter((s) => s.diff <= 6);
+    if (near.length) {
+      pool = near;
+      timeFiltered = true;
+    }
+  }
+  pool.sort((a, b) => {
+    if (timeFiltered && Math.abs(a.diff - b.diff) > 1) return a.diff - b.diff;
+    if (b.score !== a.score) return b.score - a.score;
+    return a.diff - b.diff;
+  });
+
+  // 候选（按歌手去重）：MB 一次搜索就带全了，不用再发请求
+  const candidates = [];
+  const seen = new Set();
+  for (const s of pool) {
+    const k = normForMatch(s.artist);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    candidates.push({ artist: s.artist, track: s.track, duration: s.duration, hasLyric: false });
+    if (candidates.length >= 5) break;
+  }
+
+  return { ...pool[0], timeFiltered, want, candidates };
+}
+
 /** 「歌名 - 歌手」→ 合法文件名（不含扩展名）。Windows 非法字符换下划线 */
 function sanitizeBaseName(s) {
   return String(s || '')
@@ -1313,15 +1509,48 @@ async function handleApi(path, req, res, url) {
     // 文件里已有标签就不必联网（绝大多数没有，但万一有就省一次请求）
     const fileBase = basename(t.path).replace(/\.[^.]+$/, '');
     try {
-      const hit = await fetchMetaFromLrclib(fileBase, dur);
-      if (!hit) return sendJson(res, 200, { ok: false, reason: 'not-found', current: fileBase });
-      // 出 proposed 时优先沿用它文件里原有的歌名写法（见 fetchMetaFromLrclib 里的 segForTrack）：
-      // 「太阳与地球」不该被改成「太阳与地球 (Sun & Earth)」。
+      // ---- 双源：Lrclib 优先（有歌词、简体），挂了或查不到就换 MusicBrainz ----
+      let hit = null;
+      let source = 'lrclib';
+      let firstErr = null;
+      try {
+        hit = await fetchMetaFromLrclib(fileBase, dur);
+      } catch (e) {
+        firstErr = e;
+      }
+      if (!hit) {
+        try {
+          const mb = await fetchMetaFromMusicBrainz(fileBase, dur);
+          if (mb) {
+            hit = mb;
+            source = 'musicbrainz';
+          }
+        } catch (e) {
+          if (!firstErr) firstErr = e;
+        }
+      }
+      if (!hit) {
+        // 一个源都没结果：能确定是"服务不可用"就照实说，别让用户以为是自己歌的问题
+        if (firstErr) {
+          return sendJson(res, 200, {
+            ok: false,
+            reason: /50[0-9]|429|不可用/.test(String(firstErr.message || '')) ? 'unavailable' : 'error',
+            error: String(firstErr.message || firstErr),
+            current: fileBase,
+          });
+        }
+        return sendJson(res, 200, { ok: false, reason: 'not-found', current: fileBase });
+      }
+
+      // 出 proposed 时优先沿用它文件里原有的写法：
+      //  · 歌名：「太阳与地球」不该被改成「太阳与地球 (Sun & Earth)」
+      //  · 歌手：MusicBrainz 只给繁体（盧廣仲），沿用文件名的「卢广仲」才对
       const trackOut =
         hit.segForTrack && normForMatch(hit.segForTrack) !== normForMatch(hit.artist)
           ? hit.segForTrack
           : hit.track;
-      const proposed = sanitizeBaseName(trackOut + ' - ' + hit.artist);
+      const artistOut = hit.artistPartial && hit.segForArtist ? hit.segForArtist : hit.artist;
+      const proposed = sanitizeBaseName(trackOut + ' - ' + artistOut);
       const unchanged = normForMatch(proposed) === normForMatch(fileBase);
 
       // ---- 是否可信，由宿主判定（前端只负责照着执行，不再自己猜）----
@@ -1343,24 +1572,28 @@ async function handleApi(path, req, res, url) {
       // ---- 先跑不需要联网的判定（注定 skip 的就不再多花一次搜索）----
       if (versionMark) {
         verdict = 'skip';
-        why = '疑似' + versionMark + '版本，歌词库只会返回原唱，改了会错';
+        why = '疑似' + versionMark + '版本，音乐库只会返回原唱，改了会错';
       } else if (badSegs.length) {
         verdict = 'skip';
-        why = '文件名里的「' + badSegs[0] + '」对不上歌词库，可能是 remix/翻唱版本';
+        why = '文件名里的「' + badSegs[0] + '」对不上音乐库，可能是 remix/翻唱版本';
       } else if (!hit.trackOk) {
         verdict = 'skip';
-        why = '歌词库里找不到这首歌（搜到的候选歌名都对不上），保留原名';
+        why = '音乐库里找不到这首歌（搜到的候选歌名都对不上），保留原名';
       } else if (hit.want > 0 && !hit.timeFiltered) {
         verdict = 'skip';
-        why = '歌词库里没有与你这首时长相符的版本（差得都超过 6 秒），不是同一个录音';
+        why = '音乐库里没有与你这首时长相符的版本（差得都超过 6 秒），不是同一个录音';
       }
 
       // ---- 候选版本（可能需要让用户选，也用于展示"其他版本"）----
       // 数据来自「只按歌名搜」的结果；AND 搜索里只有一条，列不出别的歌手。
       let candidates = [];
       if (verdict !== 'skip') {
-        const allVersions = await findAllVersions(hit.track);
-        candidates = allVersions.slice();
+        // Lrclib 是 AND 搜索，只给一条，要另按歌名搜才有全量；
+        // MusicBrainz 一次搜索就把所有版本带回来了，不再多发请求。
+        candidates =
+          source === 'musicbrainz'
+            ? (hit.candidates || []).slice()
+            : (await findAllVersions(hit.track)).slice();
         // 有时长就只留时长对得上的（±6s）：这是"同一个录音"的物理证据
         if (hit.want > 0) {
           const near = candidates.filter((v) => v.duration > 0 && Math.abs(v.duration - hit.want) <= 6);
@@ -1388,7 +1621,7 @@ async function handleApi(path, req, res, url) {
       if (verdict !== 'skip') {
         if (ambiguous) {
           verdict = 'ask';
-          why = '歌词库里这首歌有好几个版本，时长也分不出来，请你选一个';
+          why = '音乐库里这首歌有好几个版本，时长也分不出来，请你选一个';
         } else if (filenameClaimsArtist && !hit.artistOk && !hit.artistPartial) {
           // 文件名写了歌手 A，但时长指向歌手 B —— 不擅自改用户写的歌手，交给他定
           verdict = 'ask';
@@ -1404,6 +1637,7 @@ async function handleApi(path, req, res, url) {
 
       return sendJson(res, 200, {
         ok: true,
+        source, // 'lrclib' | 'musicbrainz' —— 前端用来提示数据来自哪个库
         current: fileBase,
         track: hit.track,
         trackForName: trackOut, // 出名字时优先沿用的写法（用户自己的更简洁）

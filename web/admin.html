@@ -1356,7 +1356,7 @@ function renAsk(r, trackIdx, listId) {
 
   const title = document.createElement('div');
   title.style.cssText = 'color:#c46a00;white-space:pre-line';
-  title.textContent = '❓ ' + r.current + '\n     ' + r.why;
+  title.textContent = '❓ ' + r.current + srcTag(r) + '\n     ' + r.why;
   row.appendChild(title);
 
   const bar = document.createElement('div');
@@ -1419,6 +1419,11 @@ $('btn-pl-ren-stop').onclick = () => {
   }
   $('pl-ren-wrap').style.display = 'none'; // 跑完了这个按钮就是「关闭」
 };
+
+// 数据来源标记：Lrclib 挂了会自动换 MusicBrainz（繁体库），标出来让用户心里有数
+function srcTag(r) {
+  return r && r.source === 'musicbrainz' ? '　［来源 MusicBrainz］' : '';
+}
 
 // 歌词库里同一首歌的其他版本 —— 只在"文件名已写歌手"时才查得到。
 // 用于提醒：歌手可能标错了（整串搜索永远只会返回文件名里那个歌手，看不到别人）。
@@ -1513,12 +1518,12 @@ $('btn-pl-rename-file').onclick = async () => {
         notfound++;
         down = 0;
       } else if (r.reason === 'unavailable') {
-        renLog('⚠️ ' + r.current + '　歌词库暂时不可用，稍后重跑一次', 'warn');
+        renLog('⚠️ ' + r.current + '　两个音乐库都暂时不可用（Lrclib / MusicBrainz），过几分钟重试', 'warn');
         failed++;
         down++;
         if (down >= 5) {
-          // 连续 5 首都拿不到 → 大概率整站挂了。继续跑只会白等（每首要重试 4 次）
-          renLog('⛔ 歌词库连续不可用，已自动停止。等一会儿再点一次「规范化命名」即可续跑', 'err');
+          // 连续 5 首都拿不到 → 大概率整站挂了。继续跑只会白等（每首要重试几次）
+          renLog('⛔ 两个音乐库都连续不可用，已自动停止。等一会儿再点一次「规范化命名」即可续跑', 'err');
           renStop = true; // 复用「已停止」的收尾文案
           break;
         }
@@ -1534,7 +1539,7 @@ $('btn-pl-rename-file').onclick = async () => {
     //   · ask 必须在 unchanged 之前：「暗号 - 李泓伸」新名和老名一样（都是李泓伸），
     //     若先看 unchanged 就直接跳过，恰恰这一种最该问用户——名字没变，但歌手可能整个标错了
     if (r.verdict === 'skip') {
-      renLog('⏭ ' + r.current + '\n     跳过：' + (r.why || '无法确认版本'), 'skip');
+      renLog('⏭ ' + r.current + '\n     跳过：' + (r.why || '无法确认版本') + srcTag(r), 'skip');
       skipped++;
       continue;
     }
@@ -1546,7 +1551,7 @@ $('btn-pl-rename-file').onclick = async () => {
     }
 
     if (r.unchanged) {
-      renLog('⏭ ' + r.current + '　已经是标准名' + othersNote(r), 'skip');
+      renLog('⏭ ' + r.current + '　已经是标准名' + srcTag(r) + othersNote(r), 'skip');
       already++;
       continue;
     }
@@ -1565,7 +1570,7 @@ $('btn-pl-rename-file').onclick = async () => {
           (low ? '⚠️ ' : '✅ ') + d0.old + '\n     → ' + d0.name +
             (d0.lrc ? '（歌词一起改了）' : '') +
             (low ? '\n     ' + (r.why || '按原唱补全，请核对') : '') +
-            othersNote(r),
+            srcTag(r) + othersNote(r),
           low ? 'warn' : 'ok',
         );
         changed++;
