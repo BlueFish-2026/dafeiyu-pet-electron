@@ -1143,24 +1143,48 @@ class PetSprite {
         label: (l.id === lid ? '● ' : '○ ') + this.musicClip(l.name, 12) + '（' + l.count + ' 首）',
         action: 'music-list-' + l.id,
       }));
+      // 音乐菜单分三级：音乐 → 播放模式 / 歌单 / 曲目。
+      // 原先 13 项全平铺在一个面板里，还夹着「（没有歌单）」「（歌单是空的）」两个空占位，
+      // 又长又杂。收成 3 个分支后顶层只剩 5 项，展开哪项才看哪项。
+      // （菜单组件支持三级——「动作 → 分类 → 动画」就是这么用的）
       tools.push({
         label: '音乐' + (this.musicPlaying ? '（播放中）' : ''),
         children: [
           { label: this.musicPlaying ? '⏸ 暂停' : '▶ 播放', action: 'music-toggle' },
           { label: '⏭ 下一首', action: 'music-next' },
           { label: '⏮ 上一首', action: 'music-prev' },
-          { label: '—— 歌单 ——', action: 'noop' },
-          ...(listItems.length ? listItems : [{ label: '（没有歌单）', action: 'noop' }]),
-          ...(allLists.length > 10 ? [{ label: '更多歌单请到设置页', action: 'noop' }] : []),
-          { label: '—— 播放模式 ——', action: 'noop' },
-          ...modeItems,
-          { label: '—— 选择曲目（' + tracks.length + ' 首）——', action: 'noop' },
-          ...(pick.length ? pick : [{ label: '（歌单是空的）', action: 'noop' }]),
-          ...(tracks.length > max
-            ? [{ label: '还有 ' + (tracks.length - max) + ' 首未列出', action: 'noop' }]
-            : []),
-          { label: '管理歌单（设置页）', action: 'open-admin' },
-          { label: '重新加载歌单', action: 'music-reload' },
+          { label: '播放模式', children: modeItems },
+          {
+            label: '歌单',
+            children: listItems.length
+              ? [
+                  ...listItems,
+                  ...(allLists.length > 10 ? [{ label: '更多歌单请到设置页', action: 'noop' }] : []),
+                  { label: '重新加载歌单', action: 'music-reload' },
+                  { label: '管理歌单（设置页）', action: 'open-admin' },
+                ]
+              : [
+                  { label: '（还没有歌单）', action: 'noop' },
+                  { label: '去设置页建歌单', action: 'open-admin' },
+                ],
+          },
+          {
+            label: '选择曲目（' + tracks.length + ' 首）',
+            children: pick.length
+              ? [
+                  ...pick,
+                  ...(tracks.length > max
+                    ? [
+                        { label: '还有 ' + (tracks.length - max) + ' 首未列出', action: 'noop' },
+                        { label: '去设置页管理', action: 'open-admin' },
+                      ]
+                    : []),
+                ]
+              : [
+                  { label: '（歌单是空的）', action: 'noop' },
+                  { label: '去设置页加歌', action: 'open-admin' },
+                ],
+          },
         ],
       });
     }
