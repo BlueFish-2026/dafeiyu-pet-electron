@@ -200,6 +200,7 @@
     <button class="tab is-on" data-tab="remind">提醒</button>
     <button class="tab" data-tab="look">外观</button>
     <button class="tab" data-tab="music">音乐</button>
+    <button class="tab" data-tab="playlist">歌单</button>
     <button class="tab" data-tab="account">账户与更新</button>
   </nav>
 
@@ -294,10 +295,8 @@
   </div>
 
   <div class="card" data-panel="music">
-    <h2><span class="ico">🎵</span>音乐与歌单</h2>
-    <p class="hint-mini">
-      歌单在宠物右键菜单「音乐」里播放。想加歌：扫描任意文件夹挑歌加入，或直接把文件丢进「音乐」文件夹。
-    </p>
+    <h2><span class="ico">🎵</span>音乐</h2>
+    <p class="hint-mini">歌单在宠物右键菜单「音乐」里播放。加歌、改曲目去「歌单」标签。</p>
 
     <div class="field">
       <label>当前歌单</label>
@@ -311,14 +310,21 @@
 
     <div class="field">
       <label>播放模式</label>
-      <div class="row">
-        <select id="pl-mode" style="flex:1">
-          <option value="sequential">顺序播放</option>
-          <option value="repeat-one">单曲循环</option>
-          <option value="shuffle">随机播放（洗牌播完再重洗）</option>
-        </select>
-        <button class="ghost" id="btn-pl-scan">📁 扫描文件夹加歌</button>
-      </div>
+      <select id="pl-mode" style="width:100%">
+        <option value="sequential">顺序播放</option>
+        <option value="repeat-one">单曲循环</option>
+        <option value="shuffle">随机播放（洗牌播完再重洗）</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="card" data-panel="playlist">
+    <h2><span class="ico">📋</span>歌单</h2>
+    <p class="hint-mini">正在管理「<span id="pl-cur-name">—</span>」。切换歌单去「音乐」标签。</p>
+
+    <div class="actions" style="margin-bottom:12px">
+      <button class="ghost" id="btn-pl-scan">📁 扫描文件夹加歌</button>
+      <button class="ghost" id="btn-pl-dedupe">清理重复与失效</button>
     </div>
 
     <div class="field" id="pl-scan-wrap" style="display:none">
@@ -327,10 +333,7 @@
     </div>
 
     <div class="field">
-      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
-        <label style="margin:0">曲目</label>
-        <button class="ghost" id="btn-pl-dedupe" style="padding:4px 10px;font-size:12px">清理重复与失效</button>
-      </div>
+      <label>曲目</label>
       <div id="pl-tracks" class="reminder-wrap"></div>
     </div>
 
@@ -775,6 +778,11 @@ function plRender() {
   const cur = plCurrent();
   $('pl-mode').value = cur ? cur.mode || 'sequential' : 'sequential';
   $('pl-mode').disabled = !cur;
+  // 歌单标签页里显示「正在管理哪个」——歌单切换器留在「音乐」标签，这里只做只读提示
+  const nameEl = $('pl-cur-name');
+  if (nameEl) {
+    nameEl.textContent = cur ? cur.name + '（' + (cur.tracks || []).length + ' 首）' : '（还没有歌单）';
+  }
   plRenderTracks();
 }
 
