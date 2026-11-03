@@ -129,6 +129,7 @@ class PetSprite {
     this.musicMode = 'sequential'; // sequential | repeat-one | shuffle
     this.shuffleQueue = []; // 伪随机队列（洗牌一遍按序播完再重洗）
     this.shufflePos = 0;
+    this.shuffleBack = []; // 随机模式下"上一首"的回退栈（否则只能退化成下一首，点几次就跳掉一堆歌）
     this.musicIdx = 0;
     this.musicPlaying = false;
     this.musicEl = null; // 复用的 <audio>
@@ -1351,7 +1352,13 @@ class PetSprite {
       } else if (a.indexOf('music-pick-') === 0) {
         // 直接点某首：不用先暂停再数着切
         const i = Number(a.slice('music-pick-'.length));
-        if (Number.isInteger(i) && i >= 0) void this.musicPlay(i);
+        if (Number.isInteger(i) && i >= 0) {
+          // 手动点歌后把洗牌游标挪到这首在队列中的位置，
+          // 否则下一首会从旧位置继续，本轮里可能重复播到刚听过的、也可能跳过几首
+          const p = this.shuffleQueue ? this.shuffleQueue.indexOf(i) : -1;
+          if (p >= 0) this.shufflePos = p;
+          void this.musicPlay(i);
+        }
       }
       return;
     }
@@ -1576,9 +1583,17 @@ class PetSprite {
       } else {
         this.musicTracks = [];
       }
-      // 换了歌单，洗牌队列作废
-      this.shuffleQueue = [];
-      this.shufflePos = 0;
+      // ⚠️ 只有**歌单真的变了**才作废洗牌队列。
+      // 原来这里无条件清空，而「暂停→继续」「打开菜单」都会走到本函数，
+      // 结果每次恢复播放都重洗一遍 → 上一轮没播完的歌永远排到新一轮后面，
+      // 表现就是"有几首反复听、有几首一直轮不到"。
+      const sig = this.musicTracks.map((t) => t.i + ':' + t.name).join('|');
+      if (sig !== this._musicSig) {
+        this._musicSig = sig;
+        this.shuffleQueue = [];
+        this.shufflePos = 0;
+        this.shuffleBack = [];
+      }
       if (this.musicIdx >= this.musicTracks.length) this.musicIdx = 0;
     } catch (err) {
       this.musicLists = [];
@@ -1833,9 +1848,10 @@ class PetSprite {
       this.showMusicBubble('已暂停' + (this.musicLabel() ? ' · ' + this.musicLabel() : ''));
       return;
     }
-    // 只有「要开始播」才刷新，保证设置页刚加的歌能拿到
-    await this.musicLoadActive();
+    // 恢复播放（src 还在）不用重拉歌单：多一次请求是小事，
+    // 关键是以前重拉会顺带清掉洗牌队列，随机模式就从头再来一轮。
     if (!a.src) {
+      await this.musicLoadActive();
       if (this.musicMode === 'shuffle') this.buildShuffle();
       const first = this.musicMode === 'shuffle' && this.shuffleQueue.length ? this.shuffleQueue[0] : this.musicIdx;
       await this.musicPlay(first);
@@ -1857,6 +1873,10 @@ class PetSprite {
   async musicNext(note) {
     if (!this.musicTracks.length) return;
     if (this.musicMode === 'shuffle') {
+      // 记下"从哪一首过来的"，供「上一首」回退（最多留 100 条，别无限长）
+      if (!this.shuffleBack) this.shuffleBack = [];
+      this.shuffleBack.push(this.musicIdx);
+      if (this.shuffleBack.length > 100) this.shuffleBack.shift();
       if (!this.shuffleQueue.length || this.shufflePos >= this.shuffleQueue.length - 1) {
         const prev = this.musicIdx;
         this.buildShuffle();
@@ -1876,10 +1896,20 @@ class PetSprite {
     return this.musicPlay((this.musicIdx + 1) % n, note);
   }
 
-  /** 上一首（随机模式没有历史栈，退化成下一首） */
+  /** 上一首（随机模式按回退栈回退，栈空时才退化成下一首） */
   async musicPrev(note) {
     if (!this.musicTracks.length) return;
-    if (this.musicMode === 'shuffle') return this.musicNext(note);
+    if (this.musicMode === 'shuffle') {
+      const back = this.shuffleBack || [];
+      const prev = back.pop();
+      if (Number.isInteger(prev) && prev >= 0 && prev < this.musicTracks.length) {
+        // 同步队列游标，回退后再按「下一首」还是回到原来的顺序，不会重复
+        const p = this.shuffleQueue ? this.shuffleQueue.indexOf(prev) : -1;
+        if (p >= 0) this.shufflePos = p;
+        return this.musicPlay(prev, note);
+      }
+      return this.musicNext(note);
+    }
     const n = this.musicTracks.length;
     return this.musicPlay((((this.musicIdx - 1) % n) + n) % n, note);
   }
@@ -1904,9 +1934,10 @@ class PetSprite {
     const OK = ['sequential', 'repeat-one', 'shuffle'];
     if (OK.indexOf(mode) < 0) return;
     this.musicMode = mode;
-    if (this.musicEl) this.musicEl.loop = mode === 'repeat-one';
+    if (this.musicEl)     this.musicEl.loop = mode === 'repeat-one';
     this.shuffleQueue = [];
     this.shufflePos = 0;
+    this.shuffleBack = [];
     const NAME = { sequential: '顺序播放', 'repeat-one': '单曲循环', shuffle: '随机播放' };
     this.showMusicBubble(NAME[mode] || mode, 1800);
     // 写回歌单（失败只影响下次启动的默认值，不影响当前播放）
