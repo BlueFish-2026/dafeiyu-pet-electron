@@ -720,6 +720,8 @@ function mountContextMenu(opts) {
 	let closed = false;
 	/** 每个面板当前展开的子面板（无 = 未展开）；hideChain 会沿链清除 */
 	const openChild = new Map();
+	/** 每个面板"展开时自动滚到哪一项"（选曲目要定位到正在播放那首） */
+	const scrollTargets = new Map();
 	/** 指针整体离开菜单树的兜底关闭定时器（root mouseover 重新进入即取消） */
 	let leaveTimer = null;
 	/** 关闭某面板及其后代面板整条链（display:none + 清 openChild 链） */
@@ -746,6 +748,12 @@ function mountContextMenu(opts) {
 		if (top + panel.offsetHeight > c.y + c.h - 4) top = Math.max(c.y + 4, c.y + c.h - 4 - panel.offsetHeight);
 		panel.style.left = left + "px";
 		panel.style.top = top + "px";
+		// 自动滚到标记项（node.scrollTo）：选曲目时直接定位到正在播放那首。
+		// 面板此刻已 display:block，clientHeight 才是真值，必须放在定位之后。
+		const st = scrollTargets.get(panel);
+		if (st) {
+			panel.scrollTop = Math.max(0, st.offsetTop - panel.clientHeight / 2 + st.offsetHeight / 2);
+		}
 	};
 	/** 构建一层面板（nodes 列表）；分支项的子面板**平级**挂到 root 下，不嵌套。
 	*  面板自身先入 DOM、子面板随后入 → 层级越深绘制越靠上（子菜单盖在父菜单上层）。 */
@@ -786,6 +794,7 @@ function mountContextMenu(opts) {
 				});
 			}
 			panel.appendChild(item);
+			if (node.scrollTo) scrollTargets.set(panel, item);
 		}
 		return panel;
 	};

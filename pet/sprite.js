@@ -138,7 +138,6 @@ class PetSprite {
     this.musicLyricText = ''; // 当前这一句（切行才重绘气泡）
     this.musicLyricOn = false; // 是否正处于「歌词跟唱」模式
     this.musicLyricSeq = 0; // 防竞态：快速切歌时丢弃过期的歌词响应
-    this.musicMaxTracks = 30; // 菜单里最多列几首（宿主下发）
     this.musicAnimName = ''; // 上一首用的播放动画（auto 轮换时避开它）
     this.audioDeviceWatched = false; // 是否已挂上音频设备变化监听
     this.onAudioDeviceChange = null; // 存引用，dispose 时才能解绑
@@ -1121,14 +1120,20 @@ class PetSprite {
     if (this.pet.musicEnabled !== false) {
       const tracks = this.musicTracks || [];
       const lid = this.musicList ? this.musicList.id : '';
-      // 上限来自配置（music.maxTracks，默认 30）：菜单是垂直列表，无限列会顶出屏幕
-      const max = Math.max(1, Number(this.pet.musicMaxTracks) || this.musicMaxTracks || 30);
-      const pick = tracks.slice(0, max).map((t) => ({
+      // 不再截断曲目数：菜单面板本身可滚动（.dsh-pet-menu-column = max-height + overflow-y:auto），
+      // 早期按 music.maxTracks 砍到 30 首是"面板还不能滚"时代的补丁，现在纯属多余，
+      // 还会让用户以为歌单只有 30 首。music.maxTracks 这个配置项已不再生效。
+      const isPlaying = (t) => this.musicPlaying && t.i === this.musicIdx;
+      const pick = tracks.map((t) => ({
+        // 前导标记用「▶ + 全角空格」/「两个全角空格」而不是普通空格：
+        // 菜单项 white-space:nowrap 会折叠普通空格，导致带 ▶ 的那项文字被右推、整列不对齐。
         label:
-          (this.musicPlaying && t.i === this.musicIdx ? '▶ ' : '   ') +
+          (isPlaying(t) ? '▶\u3000' : '\u3000\u3000') +
           this.musicClip(t.name, 18) +
           (t.lrc ? ' ♪' : ''),
         action: 'music-pick-' + t.i,
+        // 正在播放那首标上：展开「选择曲目」时菜单会自动滚到它（见 shared-core 的 scrollTargets）
+        scrollTo: isPlaying(t),
       }));
       const modeItems = [
         ['sequential', '顺序播放'],
@@ -1139,9 +1144,11 @@ class PetSprite {
         action: 'music-mode-' + pair[0],
       }));
       const allLists = this.musicLists || [];
-      const listItems = allLists.slice(0, 10).map((l) => ({
+      // 同理不截断歌单数（最多 50 个，菜单能滚）
+      const listItems = allLists.map((l) => ({
         label: (l.id === lid ? '● ' : '○ ') + this.musicClip(l.name, 12) + '（' + l.count + ' 首）',
         action: 'music-list-' + l.id,
+        scrollTo: l.id === lid,
       }));
       // 音乐菜单分三级：音乐 → 播放模式 / 歌单 / 曲目。
       // 原先 13 项全平铺在一个面板里，还夹着「（没有歌单）」「（歌单是空的）」两个空占位，
@@ -1150,40 +1157,24 @@ class PetSprite {
       tools.push({
         label: '音乐' + (this.musicPlaying ? '（播放中）' : ''),
         children: [
+          // 播放器惯例顺序：上一首 → 暂停/播放 → 下一首
+          { label: '⏮ 上一首', action: 'music-prev' },
           { label: this.musicPlaying ? '⏸ 暂停' : '▶ 播放', action: 'music-toggle' },
           { label: '⏭ 下一首', action: 'music-next' },
-          { label: '⏮ 上一首', action: 'music-prev' },
           { label: '播放模式', children: modeItems },
           {
             label: '歌单',
+            // 去掉「管理歌单（设置页）」「去设置页建歌单」：一级菜单已有「打开设置页」，
+            // 同一个去处挂两遍只会让子菜单变长。
             children: listItems.length
-              ? [
-                  ...listItems,
-                  ...(allLists.length > 10 ? [{ label: '更多歌单请到设置页', action: 'noop' }] : []),
-                  { label: '重新加载歌单', action: 'music-reload' },
-                  { label: '管理歌单（设置页）', action: 'open-admin' },
-                ]
-              : [
-                  { label: '（还没有歌单）', action: 'noop' },
-                  { label: '去设置页建歌单', action: 'open-admin' },
-                ],
+              ? [...listItems, { label: '↻ 重新加载歌单', action: 'music-reload' }]
+              : [{ label: '（还没有歌单）', action: 'noop' }],
           },
           {
             label: '选择曲目（' + tracks.length + ' 首）',
-            children: pick.length
-              ? [
-                  ...pick,
-                  ...(tracks.length > max
-                    ? [
-                        { label: '还有 ' + (tracks.length - max) + ' 首未列出', action: 'noop' },
-                        { label: '去设置页管理', action: 'open-admin' },
-                      ]
-                    : []),
-                ]
-              : [
-                  { label: '（歌单是空的）', action: 'noop' },
-                  { label: '去设置页加歌', action: 'open-admin' },
-                ],
+            // 同上：不再有「还有 N 首未列出」「去设置页管理」——
+            // 面板能滚，全部列出来就是；跳设置页的入口一级菜单也有。
+            children: pick.length ? pick : [{ label: '（歌单是空的）', action: 'noop' }],
           },
         ],
       });
@@ -1198,7 +1189,7 @@ class PetSprite {
       {
         label: '调整大小',
         children: [
-          { label: '当前 ' + Math.round(Number(this.pet.size) || 462) + '（步长 40）', action: 'noop' },
+          { label: '当前 ' + Math.round(Number(this.pet.size) || 462), action: 'noop' },
           { label: '小一点（-40）', action: 'size-down' },
           { label: '大一点（+40）', action: 'size-up' },
           { label: '恢复默认（462）', action: 'size-reset' },
@@ -1215,14 +1206,18 @@ class PetSprite {
             action: 'tg-sedentary',
           },
           { label: '重置久坐计时', action: 'seat-reset' },
-          { label: '—— 间隔时长 ——', action: 'noop' },
-          ...[30, 45, 60, 90].map((n) => ({
-            label:
-              (Math.round(Number(this.pet.sedentaryMinutes) || 45) === n ? '● ' : '○ ') +
-              n +
-              ' 分钟',
-            action: 'sed-minute-' + n,
-          })),
+          // 原来是「—— 间隔时长 ——」这种装饰性分隔行（点了没反应），
+          // 改成和「播放模式」同款子菜单，层级一致、也不会误点。
+          {
+            label: '间隔时长',
+            children: [30, 45, 60, 90].map((n) => ({
+              label:
+                (Math.round(Number(this.pet.sedentaryMinutes) || 45) === n ? '● ' : '○ ') +
+                n +
+                ' 分钟',
+              action: 'sed-minute-' + n,
+            })),
+          },
         ],
       },
       // 「提示开关」（定时提醒 / 显示余额 / 系统通知）已移入网页设置页：
@@ -1574,7 +1569,7 @@ class PetSprite {
       const d = await r.json();
       this.musicLists = Array.isArray(d && d.lists) ? d.lists : [];
       this.musicList = (d && d.list) || null;
-      this.musicMaxTracks = Number(d && d.maxTracks) || 30;
+      // 宿主仍会下发 maxTracks，但菜单已改为滚动全部曲目，这个限制不再生效
       if (this.musicList) {
         this.musicTracks = this.musicList.tracks || [];
         this.musicMode = this.musicList.mode || 'sequential';

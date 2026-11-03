@@ -103,6 +103,8 @@
     background: linear-gradient(to top, #f8fafc 62%, rgba(248, 250, 252, 0));
     padding: 14px 0 6px;
   }
+  /* 没有底栏的标签（音乐/歌单）去掉给 sticky 留的那 130px，免得页面底下空一大截 */
+  body.no-sticky-bar { padding-bottom: 32px; }
 
   header { margin-bottom: 26px; }
   h1 { margin: 0 0 8px; font-size: 25px; font-weight: 650; letter-spacing: -0.02em; }
@@ -232,7 +234,8 @@
 
   <header>
     <h1>大肥鱼 · 设置</h1>
-    <div class="sub">宠物正在桌面上跑着。这里的改动点「保存」后立即生效，不用重启。</div>
+    <!-- 不要在文案里点名「保存」按钮：音乐/歌单两页是即时保存、底栏没有保存按钮 -->
+    <div class="sub">宠物正在桌面上跑着。这里的改动保存后立即生效，不用重启。</div>
     <div id="status"></div>
   </header>
 
@@ -429,8 +432,10 @@
     </div>
   </div>
 
-  <div class="actions sticky-actions">
-    <button class="primary" id="btn-save">保存</button>
+  <div class="actions sticky-actions" id="sticky-bar">
+    <!-- 保存作用于提醒/外观/账户三张表的字段；音乐与歌单是即时保存的，
+         在那两页显示「保存」只会让人以为还有没提交的改动 -->
+    <button class="primary only-form" id="btn-save">保存</button>
     <!-- 两个"试一下"只在提醒标签下有意义的全局测试按钮；
          放在歌单/音乐页纯属占位，切到别处时隐藏（见 applyTab） -->
     <button class="ghost only-remind" id="btn-test-sed">试一下久坐提醒</button>
@@ -456,11 +461,21 @@ function applyTab(name) {
   document.querySelectorAll('.tab').forEach((b) => {
     b.classList.toggle('is-on', b.dataset.tab === target);
   });
-  // 「试一下久坐/定时提醒」只跟提醒有关，其他标签下不显示，
-  // 免得底部那条固定栏在歌单页里塞着两个不相干的按钮。
+  // 「试一下久坐/定时提醒」只跟提醒有关；「保存」只对有表单的三页有意义。
+  // 两页都不占时整条底栏隐藏，免得留一条空白的固定条。
+  const hasForm = target === 'remind' || target === 'look' || target === 'account';
   document.querySelectorAll('.only-remind').forEach((b) => {
     b.style.display = target === 'remind' ? '' : 'none';
   });
+  document.querySelectorAll('.only-form').forEach((b) => {
+    b.style.display = hasForm ? '' : 'none';
+  });
+  const bar = document.getElementById('sticky-bar');
+  if (bar) {
+    const anyShown = [...bar.querySelectorAll('button')].some((b) => getComputedStyle(b).display !== 'none');
+    bar.style.display = anyShown ? '' : 'none';
+    document.body.classList.toggle('no-sticky-bar', !anyShown);
+  }
   try {
     localStorage.setItem(TAB_KEY, target);
   } catch {
