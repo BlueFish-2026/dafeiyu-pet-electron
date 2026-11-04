@@ -692,12 +692,12 @@ const MENU_CSS = [
 	".dsh-pet-menu-column::-webkit-scrollbar-track{background:transparent}",
 	".dsh-pet-menu-column::-webkit-scrollbar-thumb{background:rgba(0,0,0,.16);border-radius:4px;",
 	"border:2px solid transparent;background-clip:content-box}",
-	".dsh-pet-menu-column::-webkit-scrollbar-thumb:hover{background:rgba(43,99,255,.4);",
+	".dsh-pet-menu-column::-webkit-scrollbar-thumb:hover{background:rgba(14,165,233,.45);",
 	"border:2px solid transparent;background-clip:content-box}",
 	".dsh-pet-menu-column::-webkit-scrollbar-corner{background:transparent}",
 	".dsh-pet-menu-item{position:relative;display:flex;align-items:center;justify-content:space-between;",
 	"gap:14px;padding:5px 12px;border-radius:6px;white-space:nowrap;cursor:default}",
-	".dsh-pet-menu-item:hover{background:rgba(43,99,255,.14)}",
+	".dsh-pet-menu-item:hover{background:rgba(14,165,233,.14)}",
 	".dsh-pet-menu-item>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}",
 	".dsh-pet-menu-arrow{color:#9aa0a6;font-size:12px;flex:none}"
 ].join("");

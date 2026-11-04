@@ -37,7 +37,7 @@
   .tabs {
     display: flex; gap: 4px; margin: 0 0 18px; padding: 5px;
     background: rgba(255, 255, 255, 0.78); border: 1px solid var(--line);
-    border-radius: 14px; backdrop-filter: blur(8px);
+    border-radius: 16px; backdrop-filter: blur(8px);
   }
   .tab {
     flex: 1; border: 0; background: transparent; padding: 9px 10px;
@@ -84,7 +84,11 @@
     display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
     margin: 12px 0 14px;
   }
-  .pl-toolgrid button.ghost { width: 100%; padding: 9px 6px; font-size: 13px; }
+  .pl-toolgrid button.ghost {
+    width: 100%; padding: 9px 6px; font-size: 13px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .pl-toolgrid button.ghost svg { width: 14px; height: 14px; flex: none; }
 
   /* 曲目行：紧凑一档，删除按钮平时淡出、鼠标移上去才明显 */
   .pl-track-row {
@@ -132,8 +136,11 @@
   }
   .card h2 .ico {
     width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
-    background: var(--sky-soft); color: var(--sky); font-size: 14px;
+    background: var(--sky-soft); color: #0284c7; font-size: 14px;
   }
+  /* 线性图标统一 16px、描边继承 currentColor —— 原来这里放 emoji，
+     彩色图案自带底衬，跟浅蓝方块打架，而且各系统渲染还不一样 */
+  .card h2 .ico svg { width: 16px; height: 16px; display: block; }
   .card .hint { color: var(--ink-3); font-size: 12.5px; margin: 0 0 16px; line-height: 1.6; }
 
   .row { display: flex; flex-wrap: wrap; gap: 16px; }
@@ -153,10 +160,14 @@
   .switch + .switch { border-top: 1px solid #f1f5f9; }
   .switch span { font-size: 14px; }
   .switch small { display: block; color: var(--ink-3); font-size: 12px; margin-top: 3px; }
+  /* 开关是真按钮（原来用 div，键盘和触屏都碰不到）。
+     button 默认带 padding/border/appearance，必须清掉才不会变形。 */
   .tg {
     position: relative; width: 44px; height: 25px; border-radius: 999px;
     background: #cbd5e1; cursor: pointer; flex: 0 0 auto; transition: background .18s;
+    padding: 0; border: 0; font: inherit; color: inherit; appearance: none;
   }
+  .tg:focus-visible { outline: 2px solid var(--sky); outline-offset: 3px; }
   .tg::after {
     content: ""; position: absolute; top: 3px; left: 3px; width: 19px; height: 19px;
     border-radius: 50%; background: #fff; transition: transform .18s;
@@ -167,7 +178,7 @@
 
   .reminder {
     display: flex; gap: 10px; align-items: center; padding: 12px;
-    border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px;
+    border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px;
     background: #fcfdfe;
   }
   .reminder input[type=time] { width: 108px; flex: 0 0 auto; }
@@ -181,7 +192,7 @@
     display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
     padding: 8px 12px 10px 12px; margin-top: -1px;
     border: 1px solid var(--line); border-top: none;
-    border-radius: 0 0 12px 12px; background: #f6fafb;
+    border-radius: 0 0 10px 10px; background: #f6fafb;
   }
   .weekdays .wl { font-size: 12px; color: var(--ink-3); margin-right: 2px; }
   .wd {
@@ -189,12 +200,13 @@
     border: 1px solid var(--line); background: #fff; color: var(--ink-2);
     font-size: 12px; display: grid; place-items: center; user-select: none;
     transition: all .15s;
+    padding: 0; font-family: inherit; appearance: none;
   }
   .wd:hover { border-color: var(--teal); }
   .wd.on { background: var(--teal); border-color: var(--teal); color: #fff; font-weight: 500; }
   .hint-mini { font-size: 12px; color: var(--ink-3); margin-left: auto; }
   .icon-btn {
-    flex: 0 0 auto; width: 34px; height: 34px; border-radius: 9px;
+    flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px;
     border: 1px solid var(--line); background: #fff; cursor: pointer;
     display: grid; place-items: center; font-size: 15px; color: var(--ink-2);
     transition: all .15s;
@@ -205,27 +217,71 @@
 
   button.primary, button.ghost {
     font-family: inherit; font-size: 14px; font-weight: 560; cursor: pointer;
-    border-radius: 11px; padding: 11px 20px; transition: all .15s;
+    border-radius: 10px; padding: 11px 20px; transition: all .15s;
   }
   button.primary {
     background: var(--cta); color: #fff; border: none;
     box-shadow: 0 6px 18px -8px rgba(255,122,24,.7);
   }
-  button.primary:hover { background: #ea6a0c; }
+  button.primary:hover:not(:disabled) { background: #ea6a0c; }
   button.ghost { background: #fff; color: var(--ink-2); border: 1px solid var(--line); }
-  button.ghost:hover { border-color: var(--sky); color: var(--sky); }
+  button.ghost:hover:not(:disabled) { border-color: var(--sky); color: var(--sky); }
+  /* 提交中的禁用态：变淡 + 禁止点击，视觉上明确「已经收下了」 */
+  button:disabled { opacity: .62; cursor: not-allowed; box-shadow: none; }
   .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+  /* 键盘焦点：只在键盘操作时出现（鼠标点不闪框）。
+     用 outline 而非 box-shadow，避免被已有的阴影/圆角吃掉。 */
+  button:focus-visible,
+  .tab:focus-visible,
+  .pl-chip:focus-visible,
+  .wd:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid var(--sky);
+    outline-offset: 2px;
+  }
 
   .balance-big { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; }
   .balance-big small { font-size: 15px; font-weight: 500; color: var(--ink-3); margin-left: 5px; }
 
   #toast {
     position: fixed; left: 50%; bottom: 34px; transform: translate(-50%, 20px);
-    background: #0f172a; color: #fff; padding: 12px 22px; border-radius: 11px;
+    background: #0f172a; color: #fff; padding: 12px 22px; border-radius: 10px;
     font-size: 13.5px; opacity: 0; pointer-events: none; transition: all .25s;
     box-shadow: 0 12px 30px -10px rgba(15,23,42,.5);
   }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ============ 窄屏（窗口拖窄 / 小屏笔记本） ============ */
+  /* 之前一个断点都没有：420px 下「账户与更新」折成两行，把标签栏从 36px 撑到 54px；
+     三个操作按钮文字折行后高度参差不齐，三等分的整齐感全没了。 */
+  @media (max-width: 640px) {
+    body { padding: 20px 14px 32px; }
+    header { margin-bottom: 18px; }
+    h1 { font-size: 21px; }
+    .sub { font-size: 13px; }
+    .card { padding: 18px 16px; margin-bottom: 14px; }
+
+    /* 三等分改单列：三个按钮的文字都超过 4 字，硬挤必然折行 */
+    .pl-toolgrid { grid-template-columns: 1fr; gap: 7px; }
+
+    /* 定时提醒那行是「时间 + 文案 + 重复规则 + 删除」，窄屏整体挤不下 */
+    .reminder { flex-wrap: wrap; }
+    .reminder input[type=time] { width: 100%; }
+    .reminder select { width: 100%; }
+  }
+
+  /* 标签栏：等宽会把「账户与更新」压到折行。
+     改成按内容取宽 + 不许换行，放不下就让整条横向滚动。 */
+  @media (max-width: 560px) {
+    .tabs { gap: 3px; overflow-x: auto; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab { flex: 0 0 auto; white-space: nowrap; padding: 9px 13px; font-size: 13px; }
+    .pl-toolgrid button.ghost { font-size: 12.5px; }
+    .balance-big { font-size: 26px; }
+  }
 
 </style>
 </head>
@@ -249,56 +305,54 @@
   </nav>
 
   <div class="card" data-panel="account">
-    <h2><span class="ico">¥</span>余额</h2>
+    <h2><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M9.2 7.8 12 11.6l2.8-3.8M12 11.6V16.4M9.6 13.3h4.8M9.6 15.4h4.8"/></svg></span>余额</h2>
     <p class="hint">从 DeepSeek 官方接口读取，宠物头顶会按余额多少播不同动画。</p>
     <div class="balance-big" id="balance">—</div>
     <div class="actions" style="margin-top:16px">
-      <label class="switch" style="gap:10px;padding:0">
-        <span style="font-size:13.5px;color:var(--ink-2)">显示余额</span>
-      </label>
-      <div class="tg" id="tg-balance"></div>
+      <span id="lb-tg-balance" style="font-size:13.5px;color:var(--ink-2);display:flex;align-items:center">显示余额</span>
+      <button type="button" class="tg" id="tg-balance" role="switch" aria-checked="false" aria-labelledby="lb-tg-balance"></button>
       <button class="ghost" id="btn-refresh">立即刷新</button>
     </div>
     <div class="field" style="margin-top:16px">
-      <label>DeepSeek API Key（留空 = 自动沿用 DSH 里那份；填上就不依赖 DSH 了）</label>
+      <label for="api-key">DeepSeek API Key（留空 = 自动沿用 DSH 里那份；填上就不依赖 DSH 了）</label>
       <input type="text" id="api-key" placeholder="sk-..." spellcheck="false" autocomplete="off">
       <div style="font-size:12px;color:var(--ink-3);margin-top:6px">只保存在本机 config\user-config.json，不会外传。</div>
     </div>
   </div>
 
   <div class="card is-on" data-panel="remind">
-    <h2><span class="ico">⏱</span>久坐提醒</h2>
+    <h2><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><path d="M12 7.4V12l3.2 2"/></svg></span>久坐提醒</h2>
     <p class="hint">连续用电脑满设定时长就提醒一次。中途离开（无键鼠操作）超过设定时长会算作休息，重新计时。</p>
     <div class="switch">
-      <span>开启久坐提醒</span>
-      <div class="tg" id="tg-sed"></div>
+      <span id="lb-tg-sed">开启久坐提醒</span>
+      <button type="button" class="tg" id="tg-sed" role="switch" aria-checked="false" aria-labelledby="lb-tg-sed"></button>
     </div>
     <div class="row" style="margin-top:16px">
       <div class="field">
-        <label>坐多久提醒一次（分钟）</label>
+        <label for="sed-interval">坐多久提醒一次（分钟）</label>
         <input type="number" id="sed-interval" min="1" max="600">
       </div>
       <div class="field">
-        <label>离开多久算休息过（分钟）</label>
+        <label for="sed-away">离开多久算休息过（分钟）</label>
         <input type="number" id="sed-away" min="1" max="120">
       </div>
       <div class="field">
-        <label>不理会时多久再催（分钟）</label>
+        <label for="sed-snooze">不理会时多久再催（分钟）</label>
         <input type="number" id="sed-snooze" min="0" max="120">
       </div>
     </div>
     <div class="field" style="margin-top:16px">
-      <label>提醒文案（每行一句，随机抽；<code>{min}</code> 会替换成已坐分钟数）</label>
+      <label for="sed-texts">提醒文案（每行一句，随机抽；<code>{min}</code> 会替换成已坐分钟数）</label>
       <textarea id="sed-texts" rows="4" style="width:100%;padding:9px 12px;font-size:14px;font-family:inherit;border:1px solid var(--line);border-radius:10px;resize:vertical"></textarea>
     </div>
   </div>
 
   <div class="card is-on" data-panel="remind">
-    <h2><span class="ico">🔔</span>定时提醒</h2>
+    <h2><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.6V11a6 6 0 0 1 12 0v5.6l1.6 2.2H4.4z"/><path d="M9.9 20.3a2.4 2.4 0 0 0 4.2 0"/></svg></span>定时提醒</h2>
     <p class="hint">到点宠物会播动画、弹气泡，并推一条系统通知。</p>
     <div class="switch">
-      <span>开启定时提醒<small>关掉 = 下面所有条目一起暂停，条目本身保留</small></span>
-      <div class="tg" id="tg-sch"></div>
+      <span id="lb-tg-sch">开启定时提醒<small>关掉 = 下面所有条目一起暂停，条目本身保留</small></span>
+      <button type="button" class="tg" id="tg-sch" role="switch" aria-checked="false" aria-labelledby="lb-tg-sch"></button>
     </div>
     <p class="hint" style="margin-top:10px">
       重复规则：「<b>工作日</b>」自动跳过法定节假日，调休补班的周末照样提醒；「<b>自定义星期</b>」可以只挑某几天。
@@ -308,14 +362,14 @@
   </div>
 
   <div class="card" data-panel="look">
-    <h2><span class="ico">🐟</span>外观与通知</h2>
+    <h2><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 12.4c2.5-3.3 5.4-5 8.7-5 3.2 0 5.8 1.7 7.7 5-1.9 3.3-4.5 5-7.7 5-3.3 0-6.2-1.7-8.7-5z"/><path d="M19.8 12.4 22 9.2v6.4z"/><circle cx="15.6" cy="10.9" r=".95" fill="currentColor" stroke="none"/></svg></span>外观与通知</h2>
     <div class="row" style="margin-top:4px">
       <div class="field">
-        <label>宠物大小</label>
+        <label for="pet-size">宠物大小</label>
         <input type="number" id="pet-size" min="80" max="900" step="10">
       </div>
       <div class="field">
-        <label>起始角落</label>
+        <label for="pet-corner">起始角落</label>
         <select id="pet-corner">
           <option value="top-right">右上</option>
           <option value="top-left">左上</option>
@@ -325,15 +379,15 @@
       </div>
     </div>
     <div class="switch" style="margin-top:12px">
-      <span>配合系统通知<small>提醒时额外弹一条右下角系统通知</small></span>
-      <div class="tg" id="tg-notify"></div>
+      <span id="lb-tg-notify">配合系统通知<small>提醒时额外弹一条右下角系统通知</small></span>
+      <button type="button" class="tg" id="tg-notify" role="switch" aria-checked="false" aria-labelledby="lb-tg-notify"></button>
     </div>
     <div class="switch" style="margin-top:12px">
-      <span>开机自启<small>登录 Windows 后自动启动桌宠（写系统登录启动项）</small></span>
-      <div class="tg" id="tg-autostart"></div>
+      <span id="lb-tg-autostart">开机自启<small>登录 Windows 后自动启动桌宠（写系统登录启动项）</small></span>
+      <button type="button" class="tg" id="tg-autostart" role="switch" aria-checked="false" aria-labelledby="lb-tg-autostart"></button>
     </div>
     <div class="field" style="margin-top:12px">
-      <label>提醒气泡停留时长（秒）</label>
+      <label for="bubble-sec">提醒气泡停留时长（秒）</label>
       <input type="number" id="bubble-sec" min="5" max="120">
     </div>
   </div>
@@ -341,16 +395,16 @@
   <!-- 音乐 = 消费侧：选歌单 / 选模式 / 看曲目（只读）。
        所有增删改都在「歌单」标签，避免"扫描完还要切走才能建歌单"的割裂。 -->
   <div class="card" data-panel="music">
-    <h2><span class="ico">🎵</span>音乐</h2>
+    <h2><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 17.4V6.6l9-1.7v10.8"/><circle cx="6.9" cy="17.7" r="2.3"/><circle cx="15.9" cy="15.7" r="2.3"/></svg></span>音乐</h2>
     <p class="hint-mini">歌单在宠物右键菜单「音乐」里播放。新建/删除歌单、加歌去「歌单」标签。</p>
 
     <div class="field">
-      <label>当前歌单</label>
+      <label for="pl-select">当前歌单</label>
       <select id="pl-select" style="width:100%"></select>
     </div>
 
     <div class="field">
-      <label>播放模式</label>
+      <label for="pl-mode">播放模式</label>
       <select id="pl-mode" style="width:100%">
         <option value="sequential">顺序播放</option>
         <option value="repeat-one">单曲循环</option>
@@ -366,7 +420,7 @@
 
   <!-- 歌单 = 管理侧：新建/切换/改名/删除 + 扫描加歌 + 曲目增删 + 清理 -->
   <div class="card" data-panel="playlist">
-    <h2><span class="ico">📋</span>歌单</h2>
+    <h2><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.4 7h10.8M8.4 12h10.8M8.4 17h10.8"/><circle cx="4.9" cy="7" r="1" fill="currentColor" stroke="none"/><circle cx="4.9" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="4.9" cy="17" r="1" fill="currentColor" stroke="none"/></svg></span>歌单</h2>
     <p class="hint-mini">在这里新建、切换、删除歌单，扫描加歌，管理曲目。</p>
 
     <div class="field">
@@ -382,7 +436,7 @@
     </div>
 
     <div class="pl-toolgrid">
-      <button class="ghost" id="btn-pl-scan">📁 扫描文件夹加歌</button>
+      <button class="ghost" id="btn-pl-scan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 7.4a1.8 1.8 0 0 1 1.8-1.8h3.4l1.8 2.2h7.8a1.8 1.8 0 0 1 1.8 1.8v8.6a1.8 1.8 0 0 1-1.8 1.8H5.4a1.8 1.8 0 0 1-1.8-1.8z"/></svg>扫描文件夹加歌</button>
       <button class="ghost" id="btn-pl-dedupe">清理重复与失效</button>
       <button class="ghost" id="btn-pl-rename-file">规范化命名</button>
     </div>
@@ -414,7 +468,7 @@
   </div>
 
   <div class="card" data-panel="account">
-    <h2><span class="ico">⬆</span>软件更新</h2>
+    <h2><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16.4V4.8M7.8 9l4.2-4.2L16.2 9"/><path d="M4.8 19.4h14.4"/></svg></span>软件更新</h2>
     <p class="hint">内置自动更新：宠物自己联网从 GitHub 只拉改动的小文件（几百 KB），不用重装整个程序。</p>
     <div class="row" style="margin-top:4px">
       <div class="field">
@@ -504,7 +558,13 @@ function toast(msg) {
 }
 
 function bindToggle(el, get, set) {
-  const render = () => el.classList.toggle('on', !!get());
+  // 开关是 button[role=switch]：状态要同时同步给视觉（.on 类）和读屏（aria-checked），
+  // 少一个就会出现「看着是开的、读屏说关的」。
+  const render = () => {
+    const on = !!get();
+    el.classList.toggle('on', on);
+    el.setAttribute('aria-checked', on ? 'true' : 'false');
+  };
   el.onclick = () => { set(!get()); render(); };
   render();
 }
@@ -609,10 +669,13 @@ function renderReminders() {
       bar.innerHTML = '<span class="wl">重复于</span>';
       WEEK_LABELS.forEach((label, day) => {
         const on = Array.isArray(r.weekdays) && r.weekdays.includes(day);
-        const b = document.createElement('div');
+        const b = document.createElement('button');
+        b.type = 'button';
         b.className = 'wd' + (on ? ' on' : '');
         b.textContent = label;
         b.title = '周' + label;
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        b.setAttribute('aria-label', '星期' + label);
         b.onclick = () => {
           const set = new Set(Array.isArray(r.weekdays) ? r.weekdays.map(Number) : []);
           if (set.has(day)) set.delete(day); else set.add(day);
@@ -693,6 +756,16 @@ $('btn-add').onclick = () => {
 };
 
 $('btn-save').onclick = async () => {
+  // 保存要 POST + 重启渲染进程，耗时几百毫秒。期间必须锁住按钮：
+  // 否则连点会并发提交多次，最后落盘的是哪一份全看谁先回来。
+  // ⚠️ 不要用 ev.currentTarget —— async 函数里它在某些调用路径下取不到，
+  //    会抛 TypeError 并被 async 静默吞掉，表现就是「点了没反应」。
+  const btn = $('btn-save');
+  if (btn.disabled) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  btn.textContent = '保存中…';
   try {
     const payload = collect();
     const res = await api('/api/config', {
@@ -704,6 +777,10 @@ $('btn-save').onclick = async () => {
     toast('已保存，宠物已按新设置重启');
   } catch (e) {
     toast('保存失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.removeAttribute('aria-busy');
+    btn.textContent = orig;
   }
 };
 
