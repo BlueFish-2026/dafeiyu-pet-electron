@@ -1163,6 +1163,8 @@ class PetSprite {
     if (this.pet.musicEnabled !== false) {
       const tracks = this.musicTracks || [];
       const lid = this.musicList ? this.musicList.id : '';
+      // 子菜单顶部要显示「正在播放 xxx」，先把当前曲目取出来
+      const curTrack = tracks[this.musicIdx];
       // 不再截断曲目数：菜单面板本身可滚动（.dsh-pet-menu-column = max-height + overflow-y:auto），
       // 早期按 music.maxTracks 砍到 30 首是"面板还不能滚"时代的补丁，现在纯属多余，
       // 还会让用户以为歌单只有 30 首。music.maxTracks 这个配置项已不再生效。
@@ -1200,6 +1202,14 @@ class PetSprite {
       tools.push({
         label: '音乐' + (this.musicPlaying ? '（播放中）' : ''),
         children: [
+          // 顶部信息行：不展开「选择曲目」也能看到在放哪首。
+          // kind:'info' = 不可点（样式见 MENU_CSS 的 .dsh-pet-menu-info）。
+          ...(curTrack
+            ? [{
+                kind: 'info',
+                label: (this.musicPlaying ? '♪ 正在播放' : '⏸ 已暂停') + ' · ' + this.musicClip(curTrack.name, 16),
+              }]
+            : []),
           // 播放器惯例顺序：上一首 → 暂停/播放 → 下一首
           { label: '⏮ 上一首', action: 'music-prev' },
           { label: this.musicPlaying ? '⏸ 暂停' : '▶ 播放', action: 'music-toggle' },

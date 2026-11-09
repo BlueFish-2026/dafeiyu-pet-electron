@@ -699,7 +699,11 @@ const MENU_CSS = [
 	"gap:14px;padding:5px 12px;border-radius:6px;white-space:nowrap;cursor:default}",
 	".dsh-pet-menu-item:hover{background:rgba(14,165,233,.14)}",
 	".dsh-pet-menu-item>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}",
-	".dsh-pet-menu-arrow{color:#9aa0a6;font-size:12px;flex:none}"
+	".dsh-pet-menu-arrow{color:#9aa0a6;font-size:12px;flex:none}",
+	// 信息行（子菜单顶部「正在播放 xxx」）：淡色小字 + 下划分隔，明确不是可点项
+	".dsh-pet-menu-item.dsh-pet-menu-info{color:#64748b;font-size:12px;font-weight:600;",
+	"cursor:default;padding-bottom:7px;margin-bottom:2px;border-bottom:1px solid rgba(0,0,0,.07)}",
+	".dsh-pet-menu-item.dsh-pet-menu-info:hover{background:transparent}"
 ].join("");
 function isBranchNode(n) {
 	return "children" in n && Array.isArray(n.children);
@@ -782,6 +786,13 @@ function mountContextMenu(opts) {
 					openChild.set(panel, childPanel);
 					showPanel(childPanel, item);
 				});
+			} else if (node.kind === "info") {
+				// 信息行：只展示、不可点（如子菜单顶部那行「正在播放 xxx」）。
+				// 不绑 click、不响应 hover，视觉上也不该跟可选项抢注意力。
+				item.classList.add("dsh-pet-menu-info");
+				const label = document.createElement("span");
+				label.textContent = node.label;
+				item.appendChild(label);
 			} else {
 				const label = document.createElement("span");
 				label.textContent = node.label;
