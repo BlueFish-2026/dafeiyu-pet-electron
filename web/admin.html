@@ -425,6 +425,11 @@
       </select>
     </div>
 
+    <div class="switch" style="margin-bottom:16px">
+      <span id="lb-tg-micbusy">通话/开会时自动暂停<small>检测到别的程序在用麦克风（微信语音、腾讯会议、飞书…）就停播，免得对方听见你的音乐</small></span>
+      <button type="button" class="tg" id="tg-micbusy" role="switch" aria-checked="false" aria-labelledby="lb-tg-micbusy"></button>
+    </div>
+
     <div class="pl-toolgrid">
       <button class="ghost" id="btn-pl-scan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.6 7.4a1.8 1.8 0 0 1 1.8-1.8h3.4l1.8 2.2h7.8a1.8 1.8 0 0 1 1.8 1.8v8.6a1.8 1.8 0 0 1-1.8 1.8H5.4a1.8 1.8 0 0 1-1.8-1.8z"/></svg>扫描文件夹加歌</button>
       <button class="ghost" id="btn-pl-dedupe">清理重复与失效</button>
@@ -564,6 +569,7 @@ function bindToggle(el, get, set) {
 }
 
 let balanceOn = true, sedOn = true, notifyOn = true, schOn = true, autoStartOn = false;
+let micBusyOn = true; // 通话/开会时自动暂停
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -588,12 +594,15 @@ async function load() {
   notifyOn = !!cfg.systemNotification;
   schOn = cfg.scheduleEnabled !== false;
   autoStartOn = !!cfg.autoStart;
+  // 默认开：只有明确写成 false 才关（老配置里没有这个字段 → 视为开）
+  micBusyOn = !(cfg.music && cfg.music.pauseOnMicBusy === false);
 
   bindToggle($('tg-balance'), () => balanceOn, (v) => { balanceOn = v; });
   bindToggle($('tg-sed'), () => sedOn, (v) => { sedOn = v; });
   bindToggle($('tg-notify'), () => notifyOn, (v) => { notifyOn = v; });
   bindToggle($('tg-sch'), () => schOn, (v) => { schOn = v; });
   bindToggle($('tg-autostart'), () => autoStartOn, (v) => { autoStartOn = v; });
+  bindToggle($('tg-micbusy'), () => micBusyOn, (v) => { micBusyOn = v; });
 
   $('sed-interval').value = cfg.sedentary.intervalMin;
   $('sed-away').value = cfg.sedentary.awayResetMin;
@@ -708,6 +717,10 @@ function collect() {
   cfg.pet.corner = $('pet-corner').value;
   cfg.bubbleSeconds = Number($('bubble-sec').value) || 20;
   cfg.deepseekApiKey = $('api-key').value.trim();
+  // 音乐段：设置页只管这一个开关，其余字段（anim / lyricFetch / pauseOnDeviceChange）
+  // 原样跟着 cfg 一起提交；宿主用深合并，不会因为它们没被显式赋值就丢掉。
+  cfg.music = cfg.music || {};
+  cfg.music.pauseOnMicBusy = micBusyOn;
   // 给没有 id 的新提醒补一个
   cfg.reminders.forEach((r, i) => {
     if (!r.id) r.id = 'r' + Date.now() + '_' + i;

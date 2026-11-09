@@ -368,6 +368,12 @@ function startLoops() {
     const workLoop = async () => {
       try {
         const snap = await S.fetchWorkStatus(WORK_STATUS_URL);
+        // 麦克风占用：**每次轮询都要看**，不能等 ts 变化 —— ts 只在 DSH 会话状态
+        // 切换时才动，跟「有人正在开会」毫无关系。sprite 自己判断「还在播吗」，
+        // 重复调用是幂等的（暂停后 musicPlaying=false，直接 return）。
+        if (snap && snap.micBusy === true) {
+          for (const s of sprites) s.onMicBusy();
+        }
         const ts = snap && typeof snap.ts === 'number' ? snap.ts : 0;
         if (workBaseline === null) {
           workBaseline = ts; // 首拉仅记基线

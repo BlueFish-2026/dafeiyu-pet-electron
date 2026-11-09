@@ -183,6 +183,7 @@ class PetSprite {
     this.musicLyricSeq = 0; // 防竞态：快速切歌时丢弃过期的歌词响应
     this.musicAnimName = ''; // 上一首用的播放动画（auto 轮换时避开它）
     this.audioDeviceWatched = false; // 是否已挂上音频设备变化监听
+    this.micWatchOn = false; // 是否已让宿主开始监控麦克风占用（只在播放期间开着）
     this.onAudioDeviceChange = null; // 存引用，dispose 时才能解绑
 
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
@@ -323,6 +324,7 @@ class PetSprite {
       }
       this.musicEl = null;
     }
+    this.musicMicWatchStop(); // 让宿主停掉麦克风轮询，别留一个孤儿定时器
     this.musicPlaying = false;
     // 解绑音频设备监听，避免宠物销毁后还留着闭包
     if (this.onAudioDeviceChange && navigator.mediaDevices) {
@@ -1706,9 +1708,59 @@ class PetSprite {
       }
       this.musicPlaying = false;
       this.musicAnimStop();
+      this.musicMicWatchStop();
       this.showMusicBubble('音频设备变动，已暂停播放', 4200);
     };
     md.addEventListener('devicechange', this.onAudioDeviceChange);
+  }
+
+  /**
+   * 开始让宿主监控「别的程序是否在用麦克风」。
+   * 宿主每 2.5s 起一个 reg.exe 查注册表 —— 有开销，所以**只在播放期间开**，
+   * 一暂停就关，不播歌时零成本。
+   */
+  musicMicWatchStart() {
+    if (this.pet && this.pet.musicPauseOnMicBusy === false) return;
+    if (this.micWatchOn) return;
+    this.micWatchOn = true;
+    try {
+      void fetch(ORIGIN + '/api/mic-watch?on=1', { cache: 'no-store' }).catch(() => {});
+    } catch {
+      /* 静默：查不到就不查，不影响放歌 */
+    }
+  }
+
+  /** 停止监控（暂停 / 停止播放 / 宠物销毁时） */
+  musicMicWatchStop() {
+    if (!this.micWatchOn) return;
+    this.micWatchOn = false;
+    try {
+      void fetch(ORIGIN + '/api/mic-watch?on=0', { cache: 'no-store' }).catch(() => {});
+    } catch {
+      /* 静默 */
+    }
+  }
+
+  /**
+   * 宿主报告「有人正在用麦克风」（语音通话 / 视频会议）。
+   *
+   * ⚠️ 由 events.js 的 1s work-status 轮询直接调用，**不能挂在 onWorkTick 里** ——
+   * 那个只在 ts 变化时才触发，而麦克风占用跟 DSH 会话状态毫无关系。
+   *
+   * 只暂停、不自动恢复：会开完自己点继续，比中途突然出声强。
+   */
+  onMicBusy() {
+    if (!this.musicPlaying) return;
+    if (this.pet && this.pet.musicPauseOnMicBusy === false) return;
+    try {
+      if (this.musicEl) this.musicEl.pause();
+    } catch {
+      /* 已经停了 */
+    }
+    this.musicPlaying = false;
+    this.musicAnimStop();
+    this.musicMicWatchStop(); // 已经暂停，不必继续花 reg 进程
+    this.showMusicBubble('检测到通话/会议，已暂停播放', 4600);
   }
 
   /**
@@ -1885,6 +1937,7 @@ class PetSprite {
       this.musicPlaying = true;
       this.musicErrCount = 0;
       this.musicAnimStart();
+      this.musicMicWatchStart();
     } catch (err) {
       this.musicPlaying = false;
       this.musicAnimStop();
@@ -1902,6 +1955,7 @@ class PetSprite {
       a.pause();
       this.musicPlaying = false;
       this.musicAnimStop();
+      this.musicMicWatchStop();
       this.showMusicBubble('已暂停' + (this.musicLabel() ? ' · ' + this.musicLabel() : ''));
       return;
     }
@@ -1918,6 +1972,7 @@ class PetSprite {
       await a.play();
       this.musicPlaying = true;
       this.musicAnimStart();
+      this.musicMicWatchStart();
       this.showMusicBubble('♪ ' + (this.musicLabel() || ''));
     } catch (err) {
       // 源失效（文件被删/改名）：重拉歌单再放一次
@@ -1976,6 +2031,7 @@ class PetSprite {
     try {
       if (this.musicEl) this.musicEl.pause();
       this.musicPlaying = false;
+      this.musicMicWatchStop();
       // ⚠️ 必须带 ORIGIN：渲染页是 file://，相对路径 '/api/...' 会指到文件系统上去
       await fetch(ORIGIN + '/api/music/active?id=' + encodeURIComponent(id), { method: 'POST', cache: 'no-store' });
       this.musicIdx = 0;

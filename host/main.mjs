@@ -19,7 +19,7 @@
 
 import { app, powerMonitor, Notification, dialog, Tray, Menu, shell, nativeImage, net } from 'electron';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import {
   createReadStream,
   existsSync,
@@ -1042,6 +1042,87 @@ function sanitizeBaseName(s) {
     .trim();
 }
 
+// ---------------------------------------------------------------- 麦克风占用检测
+// 场景：戴着耳机听歌，突然有人打语音/开视频会，音乐还在放，很尴尬。
+//
+// 原理：Windows 会给每个用过麦克风的程序在注册表里记两个 FILETIME ——
+//   LastUsedTimeStart / LastUsedTimeStop
+// **Stop 为 0 就是「此刻正在使用」**（用完才写结束时间）。
+// 所以不需要任何音频 API、不碰原生模块，读注册表就能知道有没有人在通话/开会。
+//
+// 代价：每次查询要起一个 reg.exe（约 30~150ms），因此**只在播放期间轮询**，
+// 暂停就停表，不播歌时零开销。
+const MIC_REG_KEY =
+  'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone\\NonPackaged';
+const MIC_POLL_MS = 2500; // 2.5s：够快（来电 2.5 秒内就静音），又不至于太费电
+
+let micWatchTimer = null;
+let micBusy = false;
+let micBusyApps = [];
+let micFails = 0;
+let micUnavailable = false; // reg 不可用（被安全软件拦 / 系统没有）→ 永久停用，不反复报错
+
+/** 解析 reg query 输出：找出 Stop 时间仍为 0 的程序 */
+function parseMicBusy(stdout) {
+  const busy = [];
+  let cur = null;
+  for (const raw of String(stdout || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith('HKEY_')) {
+      const i = line.indexOf('\\NonPackaged\\');
+      cur = i >= 0 ? line.slice(i + '\\NonPackaged\\'.length) : null;
+      continue;
+    }
+    // 值是 REG_QWORD，0 会输出成 0x0
+    if (cur && /^LastUsedTimeStop\s+REG_QWORD\s+0x0+$/i.test(line)) busy.push(cur);
+  }
+  return busy;
+}
+
+function micTick() {
+  execFile('reg', ['query', MIC_REG_KEY, '/s'], { windowsHide: true, timeout: 4000 }, (err, stdout) => {
+    if (micUnavailable) return;
+    if (err && !stdout) {
+      micFails += 1;
+      if (micFails >= 3) {
+        micUnavailable = true;
+        micWatchTimer = null;
+        micBusy = false;
+        micBusyApps = [];
+        log('麦克风占用检测不可用（reg 查询失败），该功能已停用：' + String(err.message || err));
+        return;
+      }
+    } else {
+      micFails = 0;
+      const busy = parseMicBusy(stdout);
+      const was = micBusy;
+      micBusy = busy.length > 0;
+      micBusyApps = busy;
+      if (was !== micBusy) {
+        log('麦克风占用变化：' + (micBusy ? '使用中 → ' + busy.join(' | ') : '已空闲'));
+      }
+    }
+    micWatchTimer = setTimeout(micTick, MIC_POLL_MS);
+  });
+}
+
+/** 音乐开始播放时调用（幂等） */
+function startMicWatch() {
+  if (micWatchTimer || micUnavailable) return;
+  micFails = 0;
+  micWatchTimer = setTimeout(micTick, 200); // 先立刻查一次，别等满一轮
+}
+
+/** 暂停/停止播放时调用：停表，顺带清掉状态 */
+function stopMicWatch() {
+  if (micWatchTimer) {
+    clearTimeout(micWatchTimer);
+    micWatchTimer = null;
+  }
+  micBusy = false;
+  micBusyApps = [];
+}
+
 // ---------------------------------------------------------------- 提醒 → 宠物
 
 /**
@@ -1205,10 +1286,11 @@ async function handleRoute(req, res) {
   if (rest === 'work-status') {
     noteHelperPing(); // 看门狗心跳：渲染端 1s 轮询这条，是「提醒有没有人在看」的直接证据
     // 捎带 reminderSoundSeq：渲染端比对上次值，变了就响一声提醒音（避免独立再开一条轮询）。
+    // micBusy：别人正在用麦克风（通话/开会）—— 播放中读到就让渲染端暂停，不用另开轮询通道。
     return sendJson(
       res,
       200,
-      { ...workStatus, soundSeq: reminderSoundSeq },
+      { ...workStatus, soundSeq: reminderSoundSeq, micBusy, micUnavailable },
       { 'cache-control': 'no-cache, no-store' },
     );
   }
@@ -1365,6 +1447,20 @@ async function handleApi(path, req, res, url) {
   // 这是为了根治「我改了设置页，用户浏览器还显示旧界面」这类问题（详见记忆）。
   if (action === 'ui-version' && req.method === 'GET') {
     return sendJson(res, 200, { ok: true, version: uiVersion() });
+  }
+
+  // 麦克风占用监控开关：渲染端「开始播放 → on=1」「暂停/停止 → on=0」。
+  // 只在这段时间里轮询 reg（每次要起一个进程，不播歌时不该有开销）。
+  if (action === 'mic-watch' && req.method === 'GET') {
+    const on = url.searchParams.get('on') !== '0';
+    if (on) startMicWatch();
+    else stopMicWatch();
+    return sendJson(
+      res,
+      200,
+      { ok: true, watching: !!micWatchTimer, busy: micBusy, apps: micBusyApps, unavailable: micUnavailable },
+      { 'cache-control': 'no-store' },
+    );
   }
 
   // 当前状态（管理页加载时拉一次）

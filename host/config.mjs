@@ -77,6 +77,12 @@ export const DEFAULT_USER_CONFIG = {
      */
     pauseOnDeviceChange: true,
     /**
+     * 检测到别的程序在用麦克风（语音通话 / 开会）时，自动暂停播放。
+     * 原理：Windows 在注册表里为每个用过麦克风的程序记录起止时间，
+     * LastUsedTimeStop = 0 表示此刻正在用。只在播放期间轮询，不播不查。
+     */
+    pauseOnMicBusy: true,
+    /**
      * 播放时播哪段动画：
      *   'auto'  在「悠闲哼歌 / 轻快摇摆舞 / 可爱宅舞 / 优雅女仆舞」里轮换（每次切歌换一个）
      *   具体名   固定播那一段
@@ -230,6 +236,8 @@ export function buildPetConfig(userCfg) {
         musicLyricFetch: userCfg.music?.lyricFetch !== false,
         // 音频设备变化时是否自动暂停（防外放）
         musicPauseOnDeviceChange: userCfg.music?.pauseOnDeviceChange !== false,
+        // 别人在用麦克风（通话/开会）时是否自动暂停
+        musicPauseOnMicBusy: userCfg.music?.pauseOnMicBusy !== false,
         corner: userCfg.pet.corner,
         position: {
           corner: userCfg.pet.corner,
