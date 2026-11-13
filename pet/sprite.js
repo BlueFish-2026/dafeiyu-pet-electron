@@ -184,6 +184,8 @@ class PetSprite {
     this.musicAnimName = ''; // 上一首用的播放动画（auto 轮换时避开它）
     this.audioDeviceWatched = false; // 是否已挂上音频设备变化监听
     this.micWatchOn = false; // 是否已让宿主开始监控麦克风占用（只在播放期间开着）
+    this.micPollTimer = null; // 麦克风占用的自轮询定时器（独立于 /work-status）
+    this.micWasBusy = false; // 上一轮是否已处于「麦克风被占用」，用于只在跳变时暂停
     this.onAudioDeviceChange = null; // 存引用，dispose 时才能解绑
 
     // DOM：sprite 钉在窗口内 (margin.l, margin.t)；宠物"位置"= sprite 位置，窗口随余量外扩
@@ -1177,7 +1179,7 @@ class PetSprite {
         label:
           (isPlaying(t) ? '▶\u3000' : '\u3000\u3000') +
           this.musicClip(t.name, 18) +
-          (t.lrc ? ' ♪' : ''),
+          (t.missing ? ' ⚠' : t.lrc ? ' ♪' : ''), // ⚠ = 文件已不在原位（整理文件夹后残留）
         action: 'music-pick-' + t.i,
         // 正在播放那首标上：展开「选择曲目」时菜单会自动滚到它（见 shared-core 的 scrollTargets）
         scrollTo: isPlaying(t),
@@ -1723,15 +1725,49 @@ class PetSprite {
     if (this.pet && this.pet.musicPauseOnMicBusy === false) return;
     if (this.micWatchOn) return;
     this.micWatchOn = true;
-    try {
-      void fetch(ORIGIN + '/api/mic-watch?on=1', { cache: 'no-store' }).catch(() => {});
-    } catch {
-      /* 静默：查不到就不查，不影响放歌 */
-    }
+    // 🎯 自带轮询，**不搭 /work-status 的车**：那条轮询受「工作状态联动」开关门控，
+    // 独立版用户多半把它关了，搭车的结果就是麦克风检测整个静默失效（2026-11-10 实测踩到）。
+    this.micPollTick(200); // 刚开播先立刻查一次，别干等 2.5s
+  }
+
+  /** 麦克风占用轮询：2.5s 一次，只在播放期间跑。宿主侧 reg 也是 2.5s，再快没意义 */
+  micPollTick(delay = 2500) {
+    if (this.micPollTimer) clearTimeout(this.micPollTimer);
+    this.micPollTimer = setTimeout(async () => {
+      this.micPollTimer = null;
+      if (!this.micWatchOn) return; // 已暂停/停止播放，链条断掉
+      try {
+        // 每次都带 on=1：既读状态，又能自愈「宿主重启过 / 渲染端标志不同步」的情况
+        const r = await fetch(ORIGIN + '/api/mic-watch?on=1', { cache: 'no-store' });
+        const j = await r.json();
+        if (j && j.unavailable) {
+          // 宿主判定 reg 不可用（被安全软件拦），永久停用，别一直空转
+          this.micWatchOn = false;
+          return;
+        }
+        const busy = !!(j && j.busy === true);
+        // 只在「空闲 → 繁忙」的跳变那一刻暂停一次。
+        // 否则用户暂停后手动再点播放，会被立刻又暂停，看起来像播放键坏了；
+        // 通话中途想强行听歌，第二次点就是明确意图，放行。
+        const rising = busy && !this.micWasBusy;
+        this.micWasBusy = busy;
+        if (rising) {
+          this.onMicBusy();
+          return; // onMicBusy 已经停了表，不再续轮询
+        }
+      } catch {
+        /* 网络抖动：下一轮再试，不影响放歌 */
+      }
+      if (this.micWatchOn) this.micPollTick();
+    }, delay);
   }
 
   /** 停止监控（暂停 / 停止播放 / 宠物销毁时） */
   musicMicWatchStop() {
+    if (this.micPollTimer) {
+      clearTimeout(this.micPollTimer);
+      this.micPollTimer = null;
+    }
     if (!this.micWatchOn) return;
     this.micWatchOn = false;
     try {
@@ -1744,8 +1780,8 @@ class PetSprite {
   /**
    * 宿主报告「有人正在用麦克风」（语音通话 / 视频会议）。
    *
-   * ⚠️ 由 events.js 的 1s work-status 轮询直接调用，**不能挂在 onWorkTick 里** ——
-   * 那个只在 ts 变化时才触发，而麦克风占用跟 DSH 会话状态毫无关系。
+   * 两条通道都会调它：① 本类的 micPollTick（主通道，只在播放期间跑，不依赖任何开关）；
+   * ② events.js 的 /work-status 轮询（仅当「工作状态联动」开启时才有，作为冗余提速）。
    *
    * 只暂停、不自动恢复：会开完自己点继续，比中途突然出声强。
    */
@@ -1900,12 +1936,27 @@ class PetSprite {
   }
 
   /**
+   * 可播曲目的下标（跳过 missing）。
+   * 用户整理过音乐文件夹后，歌单里会留一堆死链：它们照样占着洗牌队列的位置，
+   * 播到就触发 <audio> error 被跳过，连撞 3 次还会直接「连续播放失败，已停止」。
+   * 所以洗牌/顺序都只走能播的。
+   */
+  musicPlayableIdx() {
+    const all = this.musicTracks || [];
+    const ok = [];
+    all.forEach((t, i) => {
+      if (!t.missing) ok.push(i);
+    });
+    return ok.length ? ok : all.map((_, i) => i); // 全缺时退回全部，别让播放器彻底罢工
+  }
+
+  /**
    * 伪随机：整张歌单洗牌一遍，按序播完再重洗。
    * 为什么不每次 Math.random 抽一首：真随机会出现「同一首连着播好几次」「有些歌总也轮不到」。
    */
   buildShuffle() {
-    const n = this.musicTracks.length;
-    const arr = Array.from({ length: n }, (_, i) => i);
+    const arr = this.musicPlayableIdx();
+    const n = arr.length;
     for (let i = n - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       const tmp = arr[i];
@@ -1927,6 +1978,15 @@ class PetSprite {
     }
     const n = tracks.length;
     this.musicIdx = ((idx % n) + n) % n;
+    // 落到失效曲目（初始位置/菜单点了死链）：挪到最近一首能播的，别去撞 <audio> 报错
+    if (tracks[this.musicIdx] && tracks[this.musicIdx].missing) {
+      const ok = this.musicPlayableIdx();
+      if (ok.length < n) {
+        const ahead = ok.find((i) => i >= this.musicIdx);
+        this.musicIdx = ahead === undefined ? ok[0] : ahead;
+        note = note || '跳过失效';
+      }
+    }
     const t = tracks[this.musicIdx];
     const a = this.musicAudio();
     a.loop = this.musicMode === 'repeat-one';
@@ -1981,6 +2041,19 @@ class PetSprite {
     }
   }
 
+  /** 顺序模式下按 step（+1 下一首 / -1 上一首）找最近一首能播的 */
+  musicSeqStep(step) {
+    const n = this.musicTracks.length;
+    const ok = this.musicPlayableIdx();
+    if (ok.length === n) return (((this.musicIdx + step) % n) + n) % n; // 没有失效项，快路径
+    const set = new Set(ok);
+    for (let k = 1; k <= n; k++) {
+      const idx = (((this.musicIdx + step * k) % n) + n) % n;
+      if (set.has(idx)) return idx;
+    }
+    return (((this.musicIdx + step) % n) + n) % n;
+  }
+
   /** 下一首（按当前模式走） */
   async musicNext(note) {
     if (!this.musicTracks.length) return;
@@ -2004,8 +2077,7 @@ class PetSprite {
       this.shufflePos++;
       return this.musicPlay(this.shuffleQueue[this.shufflePos], note);
     }
-    const n = this.musicTracks.length;
-    return this.musicPlay((this.musicIdx + 1) % n, note);
+    return this.musicPlay(this.musicSeqStep(1), note);
   }
 
   /** 上一首（随机模式按回退栈回退，栈空时才退化成下一首） */
@@ -2022,8 +2094,7 @@ class PetSprite {
       }
       return this.musicNext(note);
     }
-    const n = this.musicTracks.length;
-    return this.musicPlay((((this.musicIdx - 1) % n) + n) % n, note);
+    return this.musicPlay(this.musicSeqStep(-1), note);
   }
 
   /** 切歌单：落盘 + 重新拉取（当前播放会停） */

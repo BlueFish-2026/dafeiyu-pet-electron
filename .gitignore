@@ -11,6 +11,8 @@ config/user-config.json
 config/user-config.json.bak-*
 # playlists.json 存的是本机绝对路径歌单（含个人曲库），同样不入库
 config/playlists.json
+# 修歌单路径时脚本会自动留 .bak-* / .bak2-* / .bak_* 备份，一律不入库
+config/*.bak*
 *.bak-*
 
 # 运行日志与状态（含本机使用痕迹）

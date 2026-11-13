@@ -235,12 +235,16 @@ function sendText(res, status, text) {
 }
 
 // cache：默认长缓存（assets 里的大视频/图片换来就是几十 MB，缓存收益明显）。
-// 但 HTML/JSON 这类「会在升级后变样」的文件必须 no-cache，
-// 否则改完设置页用户浏览器还拿 24 小时前的旧版（曾经踩过：新选项根本不出现）。
+// 但「会在升级后变样」的文件必须 no-cache，否则改完用户还拿旧副本：
+//   - HTML / JSON（设置页新选项不出现，曾经踩过）
+//   - JS / CSS（🔨 2026-11-10 踩到：sprite.js 改了但渲染进程读 24h 旧缓存，
+//     表现为「功能怎么改都没反应」，极难判断是代码没生效还是逻辑不对）
+// no-cache ≠ 不缓存：它仍可存副本，只是每次带 If-None-Match 回来验，没变就 304，开销可忽略。
+const NO_CACHE_EXT = new Set(['.html', '.htm', '.js', '.mjs', '.css', '.json']);
 function sendFile(res, file, opts = {}) {
   const ext = extname(file).toLowerCase();
   const type = MIME[ext] ?? 'application/octet-stream';
-  const cache = opts.cache ?? (ext === '.html' || ext === '.htm' ? 'no-cache' : 'public, max-age=86400');
+  const cache = opts.cache ?? (NO_CACHE_EXT.has(ext) ? 'no-cache' : 'public, max-age=86400');
   let size = 0;
   try {
     size = statSync(file).size;
@@ -1110,6 +1114,7 @@ function micTick() {
 function startMicWatch() {
   if (micWatchTimer || micUnavailable) return;
   micFails = 0;
+  log('麦克风占用监控：已开启（音乐播放中）');
   micWatchTimer = setTimeout(micTick, 200); // 先立刻查一次，别等满一轮
 }
 
@@ -1121,6 +1126,42 @@ function stopMicWatch() {
   }
   micBusy = false;
   micBusyApps = [];
+}
+
+/**
+ * 诊断用：把注册表里**所有**程序的麦克风使用记录原样吐出来。
+ * 排查「微信语音没被检测到」这种问题时，一次就能看清是没记录、还是有记录但 Stop 不是 0。
+ */
+function micProbe() {
+  return new Promise((resolve) => {
+    execFile('reg', ['query', MIC_REG_KEY, '/s'], { windowsHide: true, timeout: 4000 }, (err, stdout) => {
+      if (err && !stdout) return resolve({ ok: false, error: String(err.message || err) });
+      const rows = [];
+      let cur = null;
+      for (const raw of String(stdout || '').split(/\r?\n/)) {
+        const line = raw.trim();
+        if (line.startsWith('HKEY_')) {
+          const i = line.indexOf('\\NonPackaged\\');
+          cur = { app: i >= 0 ? line.slice(i + '\\NonPackaged\\'.length) : line, stop: null, start: null };
+          rows.push(cur);
+          continue;
+        }
+        if (!cur) continue;
+        const m = /^(LastUsedTimeStop|LastUsedTimeStart)\s+REG_QWORD\s+0x([0-9a-f]+)$/i.exec(line);
+        if (!m) continue;
+        const val = BigInt('0x' + m[2]);
+        // FILETIME → 可读时间；0 表示「还没结束」= 正在使用
+        let text = '0（使用中）';
+        if (val > 0n) {
+          const ms = Number(val / 10000n) - 11644473600000;
+          text = new Date(ms).toLocaleString('zh-CN');
+        }
+        if (m[1].toLowerCase() === 'lastusedtimestop') cur.stop = text;
+        else cur.start = text;
+      }
+      resolve({ ok: true, busy: micBusy, apps: micBusyApps, watching: !!micWatchTimer, rows });
+    });
+  });
 }
 
 // ---------------------------------------------------------------- 提醒 → 宠物
@@ -1452,6 +1493,11 @@ async function handleApi(path, req, res, url) {
   // 麦克风占用监控开关：渲染端「开始播放 → on=1」「暂停/停止 → on=0」。
   // 只在这段时间里轮询 reg（每次要起一个进程，不播歌时不该有开销）。
   if (action === 'mic-watch' && req.method === 'GET') {
+    if (url.searchParams.get('probe') === '1') {
+      return micProbe().then((data) =>
+        sendJson(res, 200, data, { 'cache-control': 'no-store' }),
+      );
+    }
     const on = url.searchParams.get('on') !== '0';
     if (on) startMicWatch();
     else stopMicWatch();
